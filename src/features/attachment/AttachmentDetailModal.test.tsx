@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AttachmentDetailModal } from './AttachmentDetailModal'
 import type { Attachment } from './types'
 import { FullscreenProvider } from '../../contexts'
+import { SessionNavigationContext } from '../../contexts/SessionNavigationContext'
+import { readFileBytes } from '../../api/fileDownload'
+import { saveData } from '../../utils/downloadUtils'
+
+vi.mock('../../api/fileDownload', () => ({ readFileBytes: vi.fn() }))
+vi.mock('../../utils/downloadUtils', () => ({ saveData: vi.fn() }))
 
 describe('AttachmentDetailModal', () => {
   beforeEach(() => {
@@ -80,5 +86,22 @@ describe('AttachmentDetailModal', () => {
     expect(screen.getByRole('button', { name: 'Zoom out' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Zoom in' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reset (double-click / double-tap)' })).toBeInTheDocument()
+  })
+
+  it('retains the pane server in the global fullscreen download header', async () => {
+    vi.mocked(readFileBytes).mockResolvedValue(new Uint8Array([0, 255]))
+    vi.mocked(saveData).mockClear()
+    render(
+      <FullscreenProvider>
+        <SessionNavigationContext.Provider value={{ navigateToSession: vi.fn(), currentSessionId: 'server-b::session-1', currentDirectory: '/workspace/b' }}>
+          <AttachmentDetailModal attachment={{ id: 'pdf', type: 'file', displayName: 'report.pdf', mime: 'application/pdf', url: 'file:///workspace/b/report.pdf' }} isOpen onClose={vi.fn()} />
+        </SessionNavigationContext.Provider>
+      </FullscreenProvider>,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save to file' }))
+    })
+    expect(readFileBytes).toHaveBeenCalledWith('/workspace/b/report.pdf', '/workspace/b', 'server-b')
+    expect(saveData).toHaveBeenCalledWith(new Uint8Array([0, 255]), 'report.pdf', 'application/pdf')
   })
 })

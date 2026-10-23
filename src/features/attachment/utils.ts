@@ -108,8 +108,8 @@ export function hasExpandableContent(attachment: Attachment): boolean {
 
   switch (attachment.type) {
     case 'file':
-      // 图片需要 url，其他文件需要 content 或 relativePath
-      return isImage ? !!attachment.url : !!attachment.content || !!attachment.relativePath
+      // 文件 URL 可用于下载，即使没有可内联预览的内容。
+      return isImage ? !!attachment.url : !!attachment.url || !!attachment.content || !!attachment.relativePath
     case 'folder':
       return !!attachment.relativePath
     case 'agent':

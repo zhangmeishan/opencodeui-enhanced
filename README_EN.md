@@ -28,6 +28,14 @@ A third-party Web frontend for [OpenCode](https://github.com/anomalyco/opencode)
 - **Desktop App** — Native client based on Tauri (macOS / Linux / Windows)
 - **Dynamic Port Routing** — Auto-discovery of dev services inside containers, generates preview links
 
+## Chat files
+
+- Use **Attach file**, drag files into the composer, or paste files. Multiple attachments are supported.
+- Attachments are sent to the conversation's OpenCode server. That server's `opencode-better-file-upload` plugin handles document conversion; text and code attachments are sent as readable context.
+- Ask the assistant to link generated files, for example `[Download report](./output/report.docx)`, then click the link to save. File attachments in messages and tool results can also be expanded and saved.
+- Downloads read original bytes through the conversation server's terminal API, including PDF, Office, and ZIP files. Terminal connections must be available. Linux/macOS requires `sh` and `base64`; Windows requires PowerShell. Downloads are limited to approximately 96 MiB per file and report failures on timeout or disconnect.
+- The backend configuration editor has been removed from Settings. Administrators should manage configuration in each OpenCode server's native WebUI.
+
 ## Tech Stack
 
 | Category          | Technology                     |

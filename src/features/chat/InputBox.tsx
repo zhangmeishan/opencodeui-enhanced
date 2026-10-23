@@ -24,7 +24,6 @@ import {
   detectSlashTrigger,
   ensureFileMime,
   getMimeFromPath,
-  isFileSupported,
   readFileAsDataUrl,
 } from './input/inputUtils'
 import { keybindingStore, matchesKeybinding } from '../../store/keybindingStore'
@@ -179,8 +178,6 @@ function InputBoxComponent({
   variants = [],
   selectedVariant,
   onVariantChange,
-  supportsImages = false,
-  fileCapabilities: fileCapabilitiesProp,
   models = [],
   selectedModelKey = null,
   onModelChange,
@@ -203,27 +200,20 @@ function InputBoxComponent({
   collapsedQuestion,
 }: InputBoxProps) {
   const { t } = useTranslation('chat')
-  // 合并文件能力：优先用 fileCapabilities，回退到 supportsImages
-  const fileCaps: FileCapabilities = useMemo(
-    () =>
-      fileCapabilitiesProp ?? {
-        image: supportsImages,
-        pdf: false,
-        audio: false,
-        video: false,
-      },
-    [fileCapabilitiesProp, supportsImages],
-  )
   const { externalFileDropMode } = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
-
-  // 是否有任何文件附件能力
-  const supportsAnyFile = fileCaps.image || fileCaps.pdf || fileCaps.audio || fileCaps.video
 
   // 文本状态
   const [text, setText] = useState('')
   // 附件状态（图片、文件、文件夹、agent）
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [readingFiles, setReadingFiles] = useState(0)
+  const [fileError, setFileError] = useState(false)
+  const readingFilesRef = useRef(0)
+  const draftScopeRef = useRef(sessionId)
+  useEffect(() => {
+    draftScopeRef.current = sessionId
+  }, [sessionId])
 
   // @ Mention 状态
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -413,7 +403,7 @@ function InputBoxComponent({
 
   // 计算
   const inputDisabled = !!disabled
-  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled
+  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled && readingFiles === 0
 
   // ============================================
   // Handlers
@@ -503,7 +493,7 @@ function InputBoxComponent({
   )
 
   const handleSend = useCallback(() => {
-    if (!canSend || isSubmitting) return
+    if (!canSend || isSubmitting || readingFilesRef.current > 0) return
 
     // 检测 command attachment
     const commandAttachment = attachments.find(a => a.type === 'command')
@@ -871,39 +861,44 @@ function InputBoxComponent({
     textareaRef.current?.focus()
   }, [])
 
-  // 通用文件上传 — 根据模型能力判断是否接受
+  // 文件交给服务端插件处理，不按模型原生模态过滤。
   const handleFilesSelected = useCallback(
     async (files: File[]) => {
-      if (files.length === 0 || !supportsAnyFile || isSubmitting) return
-
+      if (files.length === 0 || disabled || isSubmitting) return
+      const draftScope = sessionId
+      readingFilesRef.current++
+      setReadingFiles(readingFilesRef.current)
+      setFileError(false)
       const nextAttachments: Attachment[] = []
+      try {
+        for (const rawFile of files) {
+          const file = ensureFileMime(rawFile)
 
-      for (const rawFile of files) {
-        const file = ensureFileMime(rawFile)
+          try {
+            const dataUrl = await readFileAsDataUrl(file)
 
-        // 按 MIME 类型检查模型能力
-        if (!isFileSupported(file.type, fileCaps)) continue
-
-        try {
-          const dataUrl = await readFileAsDataUrl(file)
-
-          nextAttachments.push({
-            id: crypto.randomUUID(),
-            type: 'file',
-            displayName: file.name,
-            url: dataUrl,
-            mime: file.type,
-          })
-        } catch (err) {
-          console.warn('[InputBox] Failed to process file:', err)
+            nextAttachments.push({
+              id: crypto.randomUUID(),
+              type: 'file',
+              displayName: file.name,
+              url: dataUrl,
+              mime: file.type || 'application/octet-stream',
+            })
+          } catch (err) {
+            console.warn('[InputBox] Failed to process file:', err)
+            if (draftScopeRef.current === draftScope) setFileError(true)
+          }
         }
-      }
 
-      if (nextAttachments.length > 0) {
-        setAttachments(prev => [...prev, ...nextAttachments])
+        if (nextAttachments.length > 0 && draftScopeRef.current === draftScope) {
+          setAttachments(prev => [...prev, ...nextAttachments])
+        }
+      } finally {
+        readingFilesRef.current--
+        setReadingFiles(readingFilesRef.current)
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting],
+    [disabled, isSubmitting, sessionId],
   )
 
   // 删除附件
@@ -927,10 +922,10 @@ function InputBoxComponent({
     [attachments, isSubmitting, text],
   )
 
-  // 粘贴处理 — 根据模型能力过滤可粘贴的文件类型
+  // 粘贴文件与文件选择、拖放使用同一处理链路。
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
-      if (supportsAnyFile) {
+      if (!disabled && !isSubmitting) {
         const items = e.clipboardData?.items
         const files: File[] = []
 
@@ -938,7 +933,7 @@ function InputBoxComponent({
           for (let i = 0; i < items.length; i++) {
             if (items[i].kind === 'file') {
               const file = items[i].getAsFile()
-              if (file && isFileSupported(ensureFileMime(file).type, fileCaps)) files.push(file)
+              if (file) files.push(file)
             }
           }
         }
@@ -952,7 +947,7 @@ function InputBoxComponent({
 
       // 文本粘贴：让 textarea 默认处理（天然支持换行和 undo）
     },
-    [supportsAnyFile, fileCaps, handleFilesSelected],
+    [disabled, isSubmitting, handleFilesSelected],
   )
 
   // 拖拽文件到输入框
@@ -961,11 +956,11 @@ function InputBoxComponent({
       e.preventDefault()
       e.stopPropagation()
       dragCounterRef.current++
-      if (supportsAnyFile && e.dataTransfer.types.includes('Files')) {
+      if (!disabled && !isSubmitting && e.dataTransfer.types.includes('Files')) {
         setIsDragging(true)
       }
     },
-    [supportsAnyFile],
+    [disabled, isSubmitting],
   )
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -1076,7 +1071,6 @@ function InputBoxComponent({
       if (fileInfo.type !== 'file') return null
 
       const mime = getMimeFromPath(fileInfo.path)
-      if (!isFileSupported(mime, fileCaps)) return null
 
       try {
         const { readFile } = await import('@tauri-apps/plugin-fs')
@@ -1093,13 +1087,16 @@ function InputBoxComponent({
         return null
       }
     },
-    [fileCaps],
+    [],
   )
 
   const handleTauriExternalDrop = useCallback(
     async (paths: string[]) => {
-      if (paths.length === 0 || isSubmitting) return
-
+      if (paths.length === 0 || disabled || isSubmitting) return
+      const draftScope = sessionId
+      readingFilesRef.current++
+      setReadingFiles(readingFilesRef.current)
+      setFileError(false)
       try {
         const droppedPaths = await getDroppedPathsInfo(paths)
         const uploadAttachments: Attachment[] = []
@@ -1114,11 +1111,14 @@ function InputBoxComponent({
           const uploadAttachment = await createUploadAttachmentFromDroppedPath(droppedPath)
           if (uploadAttachment) {
             uploadAttachments.push(uploadAttachment)
-          } else {
+          } else if (droppedPath.type === 'folder') {
             mentionFiles.push(buildDraggedFileInfo(droppedPath))
+          } else if (draftScopeRef.current === draftScope) {
+            setFileError(true)
           }
         }
 
+        if (draftScopeRef.current !== draftScope) return
         if (uploadAttachments.length > 0) {
           setAttachments(prev => [...prev, ...uploadAttachments])
         }
@@ -1126,9 +1126,13 @@ function InputBoxComponent({
         insertDraggedFiles(mentionFiles)
       } catch (err) {
         console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
+        if (draftScopeRef.current === draftScope) setFileError(true)
+      } finally {
+        readingFilesRef.current--
+        setReadingFiles(readingFilesRef.current)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting],
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, disabled, externalFileDropMode, insertDraggedFiles, isSubmitting, sessionId],
   )
 
   const handleTauriDragDropEvent = useCallback(
@@ -1366,6 +1370,8 @@ function InputBoxComponent({
                   </div>
 
                   {/* Text Input - 简单的 textarea，直接显示文本 */}
+                  {readingFiles > 0 && <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">{t('inputBox.readingFiles')}</div>}
+                  {fileError && <div role="alert" className="px-4 pt-2 text-danger-100 text-[length:var(--fs-sm)]">{t('inputBox.fileReadFailed')}</div>}
                   <div className="pt-4 pb-2">
                     <textarea
                       ref={textareaRef}
@@ -1394,12 +1400,12 @@ function InputBoxComponent({
                   <div ref={toolbarRef}>
                     <InputToolbar
                       agents={agents}
+                      disabled={inputDisabled}
                       selectedAgent={selectedAgent}
                       onAgentChange={onAgentChange}
                       variants={variants}
                       selectedVariant={selectedVariant}
                       onVariantChange={onVariantChange}
-                      fileCapabilities={fileCaps}
                       onFilesSelected={handleFilesSelected}
                       isStreaming={isStreaming}
                       isSending={isSubmitting}

@@ -33,6 +33,10 @@ import {
 } from './htmlSandbox'
 import { getCachedMermaidSvg, getOrRenderMermaidSvg } from './mermaidRenderCache'
 import { inferImageDimensions } from './imageDimensions'
+import { useTranslation } from 'react-i18next'
+import { useSessionNavigation } from '../contexts/SessionNavigationContext'
+import { useFileDownload } from '../features/attachment/useFileDownload'
+import { getExplicitFileLinkPath, getFileLinkPath } from '../utils/fileLinks'
 
 interface MarkdownRendererProps {
   content: string
@@ -692,7 +696,7 @@ function renderInlineTokensToReact(tokens: unknown[], _isReasoning: boolean): Re
     if (item.type === 'link') {
       const href = typeof item.href === 'string' ? item.href : undefined
       if (isUnsafeHrefInline(href)) return <span key={index}>{renderInlineTokensToReact((item.tokens as unknown[]) ?? [], _isReasoning)} [blocked]</span>
-      const localPath = decodeLocalFileHrefInline(href) ?? getWindowsAbsolutePathInline(href)
+      const localPath = decodeLocalFileHrefInline(href) ?? getWindowsAbsolutePathInline(href) ?? getExplicitFileLinkPath(href)
       const className = _isReasoning
         ? 'text-[length:var(--fs-sm)] font-medium text-accent-main-200/80 hover:text-accent-main-200 underline underline-offset-2 transition-colors'
         : 'font-medium text-accent-main-100 hover:text-accent-main-200 underline underline-offset-2 transition-colors'
@@ -1523,6 +1527,19 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   isStreaming = false,
   variant = 'default',
 }: MarkdownRendererProps) {
+  const { t } = useTranslation('commands')
+  const { currentSessionId } = useSessionNavigation()
+  const { download, isDownloading, error } = useFileDownload()
+  const handleFileClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!currentSessionId) return
+    const target = event.target instanceof Element ? event.target : null
+    const anchor = target?.closest<HTMLAnchorElement>('a[href]')
+    const href = anchor?.getAttribute('href')
+    if (!getFileLinkPath(href)) return
+    event.preventDefault()
+    event.stopPropagation()
+    void download(href!)
+  }, [currentSessionId, download])
   const isReasoning = variant === 'reasoning'
   const projectionKey = useId()
   const renderHtmlImmediately = isStreaming && STREAMING_HTML_CONTENT_PATTERN.test(content)
@@ -1542,6 +1559,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   return (
     <div
+      onClickCapture={handleFileClick}
       className={`markdown-content ${isReasoning ? 'text-[length:var(--fs-sm)] leading-5 text-text-400' : 'text-[length:var(--fs-base)] leading-relaxed text-text-100'} break-words min-w-0 overflow-hidden ${className}`}
     >
       {streamBlocks.map(block => (
@@ -1557,6 +1575,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           }
         />
       ))}
+      {isDownloading && <div role="status" className="text-text-400 text-[length:var(--fs-sm)]">{t('attachment.downloading')}</div>}
+      {error && <div role="alert" className="text-danger-100 text-[length:var(--fs-sm)]">{t('attachment.downloadFailed')}</div>}
     </div>
   )
 })

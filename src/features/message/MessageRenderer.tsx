@@ -187,7 +187,7 @@ type ProcessSplit = {
 
 /**
  * 把 render items 拆成「过程」和「最终回答」。
- * 最终回答 = 消息中最后一段连续 text + 紧随的独立 step-finish。
+ * 最终回答 = 消息中最后一段连续 text/file + 紧随的独立 step-finish。
  * reasoning / tool 永远进过程。
  */
 export function splitProcessRenderItems(items: RenderItem[]): ProcessSplit {
@@ -198,7 +198,7 @@ export function splitProcessRenderItems(items: RenderItem[]): ProcessSplit {
   let lastTextIdx = -1
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.type === 'single' && item.part.type === 'text') {
+    if (item.type === 'single' && (item.part.type === 'text' || item.part.type === 'file')) {
       lastTextIdx = i
       break
     }
@@ -218,7 +218,7 @@ export function splitProcessRenderItems(items: RenderItem[]): ProcessSplit {
   let textRunStart = lastTextIdx
   while (textRunStart > 0) {
     const prev = items[textRunStart - 1]
-    if (prev.type === 'single' && prev.part.type === 'text') {
+    if (prev.type === 'single' && (prev.part.type === 'text' || prev.part.type === 'file')) {
       textRunStart -= 1
       continue
     }
@@ -871,6 +871,8 @@ const AssistantMessageView = memo(function AssistantMessageView({
             switch (part.type) {
               case 'text':
                 return <TextPartView key={part.id} part={part} isStreaming={isStreaming} />
+              case 'file':
+                return <FilePartView key={part.id} part={part} />
               case 'reasoning': {
                 const reasoningDone = endedReasoningIds.has(part.id)
                 return (

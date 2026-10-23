@@ -128,6 +128,12 @@ describe('InputToolbar file selection', () => {
     inputClickSpy.mockRestore()
   })
 
+  it('offers all file types even when the selected model has no native attachment capabilities', () => {
+    const { container } = render(<InputToolbar agents={[]} onFilesSelected={vi.fn()} canSend={false} onSend={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Attach file' })).toBeEnabled()
+    expect(container.querySelector('input[type="file"]')).not.toHaveAttribute('accept')
+  })
+
   it('uses the Tauri native picker on desktop', async () => {
     isTauriMock.mockReturnValue(true)
     isTauriMobileMock.mockReturnValue(false)
@@ -205,7 +211,7 @@ describe('InputToolbar file selection', () => {
 
     await waitFor(() => {
       expect(trigger).toHaveAttribute('aria-expanded', 'false')
-      expect(screen.getByRole('button', { name: 'Send message' })).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Attach file' })).toHaveFocus()
     })
   })
 

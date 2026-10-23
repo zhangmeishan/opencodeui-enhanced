@@ -29,6 +29,8 @@
     "orJustType": "Or just type a message below to start with the current directory"
   },
   "inputBox": {
+    "readingFiles": "Reading files…",
+    "fileReadFailed": "Could not read an attachment. Please select it again.",
     "dropFilesHere": "Drop files here",
     "replyToAgentMobile": "Reply to Agent...",
     "replyToAgent": "Reply to Agent (type @ to mention, / for commands)"

@@ -119,6 +119,8 @@
     "viewDetail": "查看详情",
     "copyContent": "复制内容",
     "saveToFile": "保存到文件",
+    "downloading": "正在下载文件…",
+    "downloadFailed": "下载失败，请确认文件存在且服务器连接正常后重试。",
     "noPreview": "无法预览",
     "failedToLoadImage": "图片加载失败",
     "zoomOut": "缩小",

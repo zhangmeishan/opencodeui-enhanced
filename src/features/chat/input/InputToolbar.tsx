@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDownIcon, SendIcon, StopIcon, PaperclipIcon, AgentIcon, ThinkingIcon } from '../../../components/Icons'
 import { DropdownMenu, MenuItem, IconButton, AnimatedPresence } from '../../../components/ui'
@@ -22,6 +22,7 @@ interface InputToolbarProps {
 
   isStreaming?: boolean
   isSending?: boolean
+  disabled?: boolean
   onAbort?: () => void
 
   canSend: boolean
@@ -44,10 +45,10 @@ export function InputToolbar({
   variants = [],
   selectedVariant,
   onVariantChange,
-  fileCapabilities,
   onFilesSelected,
   isStreaming,
   isSending = false,
+  disabled = false,
   onAbort,
   canSend,
   onSend,
@@ -63,43 +64,7 @@ export function InputToolbar({
   const isCompact = presentation.isCompact
   const useBrowserFileInput = !isTauri() || isTauriMobile()
 
-  // 根据模型能力计算支持的文件类型
-  const caps = fileCapabilities ?? { image: false, pdf: false, audio: false, video: false }
-  const supportsAnyFile = caps.image || caps.pdf || caps.audio || caps.video
-  const controlsDisabled = isSending
-
-  // 动态构建 HTML accept 和 Tauri filter
-  const { acceptString, tauriFilters } = useMemo(() => {
-    const accept: string[] = []
-    const extensions: string[] = []
-    const filterNames: string[] = []
-
-    if (caps.image) {
-      accept.push('image/*')
-      extensions.push('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg')
-      filterNames.push('Images')
-    }
-    if (caps.pdf) {
-      accept.push('application/pdf')
-      extensions.push('pdf')
-      filterNames.push('PDF')
-    }
-    if (caps.audio) {
-      accept.push('audio/*')
-      extensions.push('mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a')
-      filterNames.push('Audio')
-    }
-    if (caps.video) {
-      accept.push('video/*')
-      extensions.push('mp4', 'webm', 'mov', 'avi', 'mkv')
-      filterNames.push('Video')
-    }
-
-    return {
-      acceptString: accept.join(','),
-      tauriFilters: extensions.length > 0 ? [{ name: filterNames.join(' / '), extensions }] : [],
-    }
-  }, [caps.image, caps.pdf, caps.audio, caps.video])
+  const controlsDisabled = isSending || disabled
   // State for menus
   const [agentMenuOpen, setAgentMenuOpen] = useState(false)
   const [variantMenuOpen, setVariantMenuOpen] = useState(false)
@@ -217,6 +182,7 @@ export function InputToolbar({
 
   // 文件选择器（Tauri 原生 / 浏览器 fallback）
   const handleFileClick = useCallback(async () => {
+    if (controlsDisabled) return
     if (useBrowserFileInput) {
       fileInputRef.current?.click()
       return
@@ -230,7 +196,6 @@ export function InputToolbar({
 
       const selected = await open({
         multiple: true,
-        filters: tauriFilters,
         fileAccessMode: 'copy',
       })
 
@@ -256,7 +221,7 @@ export function InputToolbar({
     } catch (err) {
       console.warn('[InputToolbar] File picker error:', err)
     }
-  }, [onFilesSelected, tauriFilters, useBrowserFileInput])
+  }, [controlsDisabled, onFilesSelected, useBrowserFileInput])
 
   // Click outside logic
   useEffect(() => {
@@ -493,15 +458,15 @@ export function InputToolbar({
 
       {/* Action Buttons */}
       <div className="flex items-center gap-1">
-        <AnimatedPresence show={supportsAnyFile}>
+        <AnimatedPresence show>
           <>
             {/* 浏览器模式下的隐藏文件输入 */}
             {useBrowserFileInput && (
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={acceptString}
                 multiple
+                disabled={controlsDisabled}
                 className="hidden"
                 onChange={e => {
                   onFilesSelected(Array.from(e.target.files ?? []))

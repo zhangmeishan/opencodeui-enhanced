@@ -1,5 +1,4 @@
 import { extToMime } from '../../../utils/tauri'
-import type { FileCapabilities } from '../../../api'
 
 // ============================================
 // 文本样式常量
@@ -40,21 +39,12 @@ export function detectSlashTrigger(text: string, cursorPos: number): { query: st
 // File helpers
 // ============================================
 
-/** 检查文件 MIME 类型是否被当前模型能力支持 */
-export function isFileSupported(mime: string, caps: FileCapabilities): boolean {
-  if (mime.startsWith('image/')) return caps.image
-  if (mime === 'application/pdf') return caps.pdf
-  if (mime.startsWith('audio/')) return caps.audio
-  if (mime.startsWith('video/')) return caps.video
-  return false
-}
-
 export function ensureFileMime(file: File): File {
-  if (file.type) return file
-
   const ext = file.name.split('.').pop()?.toLowerCase() || ''
-  const mime = extToMime(ext)
-  if (!mime || mime === 'application/octet-stream') return file
+  const inferred = extToMime(ext)
+  // OpenCode expands only text/plain data URLs into readable message context.
+  const mime = inferred === 'text/plain' || file.type.startsWith('text/') ? 'text/plain' : file.type || inferred
+  if (file.type === mime) return file
 
   return new File([file], file.name, {
     type: mime,
@@ -83,8 +73,12 @@ export function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
 export function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = e => resolve(e.target?.result as string)
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('Could not read file'))
+    }
     reader.onerror = reject
+    reader.onabort = () => reject(new Error('File read cancelled'))
     reader.readAsDataURL(file)
   })
 }

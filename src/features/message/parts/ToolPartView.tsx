@@ -28,6 +28,7 @@ import {
 } from '../tools'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
+import { FilePartView } from './AttachmentPartViews'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -209,6 +210,11 @@ export const ToolPartView = memo(function ToolPartView({
     <>
       {!hideToolBodyForPermission && (
         <ToolBody part={part} data={toolData} onFullscreenChange={handleFullscreenChange} />
+      )}
+      {state.status === 'completed' && state.attachments && state.attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2 mt-2">
+          {state.attachments.map(attachment => <FilePartView key={attachment.id} part={attachment} />)}
+        </div>
       )}
       {displayPermission && (
         <div className={hideToolBodyForPermission && !permissionContentHidden ? '' : MSG_SPACING.inner}>

@@ -4,12 +4,12 @@ import { DESKTOP_FULLSCREEN_LAYER_Z_INDEX } from '../../constants'
 import { DownloadIcon, PlusIcon, MinusIcon } from '../../components/Icons'
 import { CopyButton } from '../../components/ui'
 import { getAttachmentIcon } from './utils'
-import { saveData } from '../../utils/downloadUtils'
+import { canDownloadAttachment, useFileDownload } from './useFileDownload'
 import type { Attachment } from './types'
 import { CodePreview } from '../../components/CodePreview'
 import { detectLanguage } from '../../utils/languageUtils'
-import { useFullscreen } from '../../contexts'
-import type { FullscreenLayer } from '../../contexts'
+import { useFullscreen } from '../../contexts/useFullscreen'
+import type { FullscreenLayer } from '../../contexts/FullscreenContext.shared'
 
 // ============================================
 // 常量
@@ -60,6 +60,8 @@ export const AttachmentDetailModal = memo(function AttachmentDetailModal({
   const { t } = useTranslation(['commands', 'common'])
   const { openFullscreen, updateFullscreen, closeFullscreen } = useFullscreen()
   const layerRef = useRef<FullscreenLayer | null>(null)
+  // Capture the pane's scope before the header is rendered by the global fullscreen host.
+  const fileDownload = useFileDownload()
 
   const layer = useMemo(() => {
     if (!attachment) return null
@@ -86,7 +88,7 @@ export const AttachmentDetailModal = memo(function AttachmentDetailModal({
     const headerRightNode = (
       <div className="flex items-center gap-1">
         {hasContent && <CopyButton text={attachment.content!} position="static" />}
-        {(hasContent || (isImage && hasUrl)) && <DownloadButton attachment={attachment} />}
+        {canDownloadAttachment(attachment) && <DownloadButton attachment={attachment} fileDownload={fileDownload} />}
       </div>
     )
 
@@ -107,7 +109,7 @@ export const AttachmentDetailModal = memo(function AttachmentDetailModal({
           </div>
         ),
     }
-  }, [attachment, onClose, t])
+  }, [attachment, fileDownload, onClose, t])
 
   useEffect(() => {
     layerRef.current = layer
@@ -133,33 +135,30 @@ export const AttachmentDetailModal = memo(function AttachmentDetailModal({
 // DownloadButton - 主题色下载按钮
 // ============================================
 
-function DownloadButton({ attachment }: { attachment: Attachment }) {
+function DownloadButton({
+  attachment,
+  fileDownload,
+}: {
+  attachment: Attachment
+  fileDownload: ReturnType<typeof useFileDownload>
+}) {
   const { t } = useTranslation(['commands', 'common'])
-
-  const handleDownload = useCallback(() => {
-    const isImage = attachment.mime?.startsWith('image/')
-    const fileName = attachment.displayName || (isImage ? 'image' : 'attachment.txt')
-
-    if (isImage && attachment.url) {
-      fetch(attachment.url)
-        .then(res => res.arrayBuffer())
-        .then(buf => saveData(new Uint8Array(buf), fileName, attachment.mime || 'image/png'))
-        .catch(err => console.warn('[AttachmentDetailModal] save image failed:', err))
-    } else if (attachment.content) {
-      saveData(new TextEncoder().encode(attachment.content), fileName, 'text/plain;charset=utf-8')
-    }
-  }, [attachment])
+  const { download, isDownloading, error } = fileDownload
 
   return (
-    <button
-      type="button"
-      onClick={handleDownload}
-      aria-label={t('attachment.saveToFile')}
-      className="p-1.5 text-text-400 hover:text-text-100 hover:bg-bg-200/60 rounded-lg transition-colors"
-      title={t('attachment.saveToFile')}
-    >
-      <DownloadIcon size={16} />
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => void download(attachment)}
+        disabled={isDownloading}
+        aria-label={t('attachment.saveToFile')}
+        className="p-1.5 text-text-400 hover:text-text-100 hover:bg-bg-200/60 rounded-lg transition-colors"
+        title={t('attachment.saveToFile')}
+      >
+        <DownloadIcon size={16} />
+      </button>
+      {error && <span role="alert" className="text-danger-100">{t('attachment.downloadFailed')}</span>}
+    </>
   )
 }
 

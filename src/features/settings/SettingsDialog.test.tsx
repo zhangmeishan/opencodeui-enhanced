@@ -41,7 +41,6 @@ vi.mock('./components/NotificationSettings', () => ({
 vi.mock('./components/ServiceSettings', () => ({ ServiceSettings: () => <div>Service content</div> }))
 vi.mock('./components/ServersSettings', () => ({ ServersSettings: () => <div>Servers content</div> }))
 vi.mock('./components/WorkspaceSettings', () => ({ WorkspaceSettings: () => <div>Workspace content</div> }))
-vi.mock('./components/ConfigSettings', () => ({ ConfigSettings: () => <div>Config content</div> }))
 
 describe('SettingsDialog search', () => {
   beforeEach(async () => {
@@ -77,6 +76,16 @@ describe('SettingsDialog search', () => {
     expect(screen.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('Color control').parentElement).toHaveClass('settings-search-highlight')
     expect(screen.getByRole('button', { name: 'Color control' })).toHaveFocus()
+  })
+
+  it('does not expose backend configuration in navigation or search', async () => {
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.queryByRole('tab', { name: /config/i })).not.toBeInTheDocument()
+    const input = screen.getByRole('combobox', { name: 'Search settings' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'Configuration' } })
+    expect(screen.queryAllByRole('option')).toHaveLength(0)
   })
 
   it('distinguishes duplicate setting labels by their subgroup', async () => {

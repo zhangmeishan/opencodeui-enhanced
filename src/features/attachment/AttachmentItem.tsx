@@ -6,7 +6,7 @@ import { getMaterialIconUrl } from '../../utils/materialIcons'
 import { useDelayedRender } from '../../hooks/useDelayedRender'
 import { AttachmentDetailModal } from './AttachmentDetailModal'
 import { clipboardErrorHandler, copyTextToClipboard } from '../../utils'
-import { saveData } from '../../utils/downloadUtils'
+import { canDownloadAttachment, useFileDownload } from './useFileDownload'
 import type { Attachment } from './types'
 
 interface AttachmentItemProps {
@@ -167,7 +167,7 @@ function ExpandedContent({ attachment, imageError, onImageError, onOpenDetail }:
   const { type, url, content, relativePath, mime, agentName, agentDescription } = attachment
   const isImage = mime?.startsWith('image/')
   const hasContent = !!content
-  const hasDownloadable = hasContent || (!!isImage && !!url)
+  const hasDownloadable = canDownloadAttachment(attachment)
 
   // Content Area
   let contentNode = null
@@ -217,7 +217,7 @@ function ExpandedContent({ attachment, imageError, onImageError, onOpenDetail }:
         <MetaRow
           label={t('attachment.source')}
           value={
-            url && !(url.startsWith('data:') && isImage && !imageError)
+            url && !url.startsWith('data:')
               ? url.startsWith('file:///')
                 ? decodeURIComponent(url.replace(/^file:\/\/\/?/, ''))
                 : url
@@ -284,6 +284,7 @@ interface ActionBarProps {
 function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, showBorderTop }: ActionBarProps) {
   const { t } = useTranslation(['commands', 'common'])
   const [copied, setCopied] = useState(false)
+  const { download, isDownloading, error } = useFileDownload()
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -311,20 +312,9 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
   const handleDownload = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation()
-      const isImage = attachment.mime?.startsWith('image/')
-      const fileName = attachment.displayName || (isImage ? 'image' : 'attachment.txt')
-
-      if (isImage && attachment.url) {
-        // 图片：从 data URI 或 URL fetch 后保存
-        fetch(attachment.url)
-          .then(res => res.arrayBuffer())
-          .then(buf => saveData(new Uint8Array(buf), fileName, attachment.mime || 'image/png'))
-          .catch(err => console.warn('[AttachmentItem] save image failed:', err))
-      } else if (attachment.content) {
-        saveData(new TextEncoder().encode(attachment.content), fileName, 'text/plain;charset=utf-8')
-      }
+      void download(attachment)
     },
-    [attachment],
+    [attachment, download],
   )
 
   const handleOpenDetail = useCallback(
@@ -366,6 +356,7 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
       {hasDownloadable && (
         <button
           onClick={handleDownload}
+          disabled={isDownloading}
           className={`${btnBase} text-text-400 hover:text-text-200 hover:bg-bg-300/50`}
           title={t('attachment.saveToFile')}
         >
@@ -373,6 +364,7 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
           <span>{t('common:save')}</span>
         </button>
       )}
+      {error && <span role="alert" className="text-danger-100">{t('attachment.downloadFailed')}</span>}
     </div>
   )
 }

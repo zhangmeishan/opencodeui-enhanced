@@ -29,6 +29,8 @@
     "orJustType": "或在下方直接输入消息，使用当前目录开始"
   },
   "inputBox": {
+    "readingFiles": "正在读取文件…",
+    "fileReadFailed": "有附件读取失败，请重新选择该文件。",
     "dropFilesHere": "拖放文件到此处",
     "replyToAgentMobile": "回复 Agent...",
     "replyToAgent": "回复 Agent（输入 @ 提及，/ 执行命令）"

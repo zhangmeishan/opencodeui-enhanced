@@ -6,6 +6,7 @@ import 'katex/dist/katex.min.css'
 import { inferImageDimensions } from './imageDimensions'
 import { MATH_DELIMITERS, getFootnoteId, isEscapedAt, scanTextSegments } from './markdownSegments'
 import type { MarkdownSegment } from './markdownSegments'
+import { getExplicitFileLinkPath } from '../utils/fileLinks'
 
 const LOCAL_FILE_LINK_PREFIX = '#opencode-local-file:'
 
@@ -333,7 +334,7 @@ function createMarkdownHtmlRenderer(isReasoning: boolean) {
   renderer.link = function ({ href, title, tokens }) {
     const content = this.parser.parseInline(tokens)
     if (isUnsafeHref(href)) return `${content} [blocked]`
-    const localPath = decodeLocalFileHref(href) ?? getWindowsAbsolutePath(href)
+    const localPath = decodeLocalFileHref(href) ?? getWindowsAbsolutePath(href) ?? getExplicitFileLinkPath(href)
     const normalizedHref = localPath ? encodeLocalFileHref(localPath) : href
     const className = isReasoning
       ? 'text-[length:var(--fs-sm)] font-medium text-accent-main-200/80 hover:text-accent-main-200 underline underline-offset-2 transition-colors'
@@ -435,7 +436,7 @@ function rewriteRawHtmlLocalLinks(html: string): string {
   template.innerHTML = html
   template.content.querySelectorAll<HTMLAnchorElement>('a[href]').forEach(anchor => {
     const href = anchor.getAttribute('href') ?? ''
-    const localPath = decodeLocalFileHref(href) ?? getWindowsAbsolutePath(href)
+    const localPath = decodeLocalFileHref(href) ?? getWindowsAbsolutePath(href) ?? getExplicitFileLinkPath(href)
     if (!localPath) return
     anchor.setAttribute('href', encodeLocalFileHref(localPath))
     anchor.setAttribute('title', localPath)
@@ -575,7 +576,7 @@ function sanitizeHtml(html: string): string {
       return
     }
 
-    const localPath = decodeLocalFileHref(href) ?? getWindowsAbsolutePath(href)
+    const localPath = decodeLocalFileHref(href) ?? getWindowsAbsolutePath(href) ?? getExplicitFileLinkPath(href)
     if (localPath) {
       anchor.setAttribute('href', encodeLocalFileHref(localPath))
       anchor.setAttribute('title', localPath)

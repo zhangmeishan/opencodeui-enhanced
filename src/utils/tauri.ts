@@ -34,6 +34,9 @@ export function usesCustomDesktopTitlebar(): boolean {
 
 /** 文件扩展名 → MIME 类型映射 */
 export function extToMime(ext: string): string {
+  if (/^(?:txt|md|markdown|rst|log|json|jsonl|ndjson|yaml|yml|toml|ini|env|csv|tsv|xml|html|htm|js|jsx|ts|tsx|mjs|cjs|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sh|bash|zsh|sql|css|scss)$/.test(ext)) {
+    return 'text/plain'
+  }
   const map: Record<string, string> = {
     // image
     png: 'image/png',
@@ -45,6 +48,14 @@ export function extToMime(ext: string): string {
     svg: 'image/svg+xml',
     // pdf
     pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    zip: 'application/zip',
+    epub: 'application/epub+zip',
     // audio
     mp3: 'audio/mpeg',
     wav: 'audio/wav',

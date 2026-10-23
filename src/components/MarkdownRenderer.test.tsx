@@ -2,6 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { clearMermaidRenderCache } from './mermaidRenderCache'
+import { SessionNavigationContext } from '../contexts/SessionNavigationContext'
+import { readFileBytes } from '../api/fileDownload'
+import { saveData } from '../utils/downloadUtils'
+
+vi.mock('../api/fileDownload', () => ({ readFileBytes: vi.fn() }))
+vi.mock('../utils/downloadUtils', () => ({ saveData: vi.fn() }))
 
 const mermaidMocks = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -1510,5 +1516,40 @@ $$`
 
     expect(screen.getByText('bad [blocked]')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'bad' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    '[下载报告](./output/报告%20最终.docx)',
+    '| 文件 |\n| --- |\n| [下载报告](./output/报告%20最终.docx) |',
+    '<a href="./output/报告%20最终.docx">下载报告</a>',
+  ])('downloads file links from the conversation server in all rendering paths: %s', async content => {
+    vi.mocked(readFileBytes).mockReset().mockResolvedValue(new Uint8Array([0, 255, 42]))
+    vi.mocked(saveData).mockClear()
+    render(
+      <SessionNavigationContext.Provider value={{ navigateToSession: vi.fn(), currentSessionId: 'server-b::session-1', currentDirectory: '/workspace/b' }}>
+        <MarkdownRenderer content={content} />
+      </SessionNavigationContext.Provider>,
+    )
+    fireEvent.click(screen.getByRole('link', { name: '下载报告' }))
+    await waitFor(() => expect(saveData).toHaveBeenCalledWith(new Uint8Array([0, 255, 42]), '报告 最终.docx', 'application/octet-stream'))
+    expect(readFileBytes).toHaveBeenCalledWith('./output/报告 最终.docx', '/workspace/b', 'server-b')
+  })
+
+  it('reports failed downloads without saving an empty file and allows retry', async () => {
+    vi.mocked(readFileBytes).mockReset().mockRejectedValueOnce(new Error('missing')).mockResolvedValueOnce(new Uint8Array([42]))
+    vi.mocked(saveData).mockClear()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    render(
+      <SessionNavigationContext.Provider value={{ navigateToSession: vi.fn(), currentSessionId: 'server-b::session-1', currentDirectory: '/workspace/b' }}>
+        <MarkdownRenderer content="[report](report.pdf)" />
+      </SessionNavigationContext.Provider>,
+    )
+    fireEvent.click(screen.getByRole('link', { name: 'report' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Download failed'))
+    expect(saveData).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('link', { name: 'report' }))
+    await waitFor(() => expect(saveData).toHaveBeenCalledOnce())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    warn.mockRestore()
   })
 })

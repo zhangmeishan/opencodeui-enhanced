@@ -54,7 +54,7 @@ vi.mock('./parts', () => ({
   TextPartView: ({ part }: { part: { text: string } }) => <div>{part.text}</div>,
   ReasoningPartView: () => null,
   ToolPartView: () => null,
-  FilePartView: () => null,
+  FilePartView: ({ part }: { part: { filename?: string } }) => <div>{part.filename}</div>,
   AgentPartView: () => null,
   SyntheticTextPartView: () => null,
   StepFinishPartView: () => null,
@@ -272,6 +272,18 @@ describe('process content split', () => {
 
     expect(messageHasProcessContent(streaming)).toBe(true)
     expect(messageHasFinalContent(streaming)).toBe(false)
+  })
+
+  it('keeps assistant result attachments with the final reply outside the collapsed process', () => {
+    const message = createCompletedAssistant([
+      { id: 'text-result', sessionID: 'session-1', messageID: 'assistant-1', type: 'text', text: 'Report ready' },
+      { id: 'file-result', sessionID: 'session-1', messageID: 'assistant-1', type: 'file', filename: 'report.pdf', mime: 'application/pdf', url: 'file:///workspace/report.pdf' },
+    ])
+    expect(messageHasFinalContent(message)).toBe(true)
+    expect(messageHasProcessContent(message)).toBe(false)
+    render(<MessageRenderer message={message} processContentScope="final" />)
+    expect(screen.getByText('Report ready')).toBeInTheDocument()
+    expect(screen.getByText('report.pdf')).toBeInTheDocument()
   })
 
   it('splits completed tool+text into process and final', () => {

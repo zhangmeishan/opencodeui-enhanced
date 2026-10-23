@@ -68,6 +68,10 @@ vi.mock('../../chat/InlineQuestion', () => ({
   InlineQuestion: () => null,
 }))
 
+vi.mock('./AttachmentPartViews', () => ({
+  FilePartView: ({ part }: { part: { filename?: string } }) => <div>{part.filename}</div>,
+}))
+
 vi.mock('../tools', () => ({
   getToolIcon: () => <span data-testid="tool-icon">icon</span>,
   extractToolData: () => ({}),
@@ -151,5 +155,20 @@ describe('ToolPartView running duration', () => {
 
     rerender(<ToolPartView part={part} descriptive />)
     expect(container.firstElementChild?.className).toContain('pt-1')
+  })
+
+  it('renders files returned as tool result attachments', async () => {
+    const part = createRunningToolPart()
+    part.id = 'tool-with-attachment'
+    part.state = {
+      status: 'completed', output: 'done', title: 'report', input: {}, metadata: {}, time: { start: 1, end: 2 },
+      attachments: [{ id: 'file-1', sessionID: 'session-1', messageID: 'message-1', type: 'file', filename: 'report.pdf', mime: 'application/pdf', url: 'data:application/pdf;base64,AA==' }],
+    }
+    // Running tools expand automatically; preserve that expanded state on completion.
+    const running = { ...part, state: { status: 'running' as const, title: 'report', time: { start: 1 } } }
+    const { rerender } = render(<ToolPartView part={running} />)
+    await act(async () => vi.advanceTimersByTime(50))
+    rerender(<ToolPartView part={part} />)
+    expect(screen.getByText('report.pdf')).toBeInTheDocument()
   })
 })

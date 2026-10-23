@@ -144,7 +144,6 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
     'service.serviceStatus',
     'service.envVars',
   ]),
-  ...definitions('config', ['config.sourceTitle']),
   ...definitions('keybindings', ['keybindings.title']),
   ...[
     'openSettings',

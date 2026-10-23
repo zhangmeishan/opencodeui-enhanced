@@ -119,6 +119,8 @@
     "viewDetail": "View detail",
     "copyContent": "Copy content",
     "saveToFile": "Save to file",
+    "downloading": "Downloading file…",
+    "downloadFailed": "Download failed. Check that the file exists and the server connection is available, then try again.",
     "noPreview": "No preview available",
     "failedToLoadImage": "Failed to load image",
     "zoomOut": "Zoom out",

@@ -93,7 +93,7 @@ export function saveData(data: Uint8Array, fileName: string, mimeType = 'applica
       console.warn('[downloadUtils] Tauri save failed:', err)
     })
   } else {
-    const blob = new Blob([data.buffer as ArrayBuffer], { type: mimeType })
+    const blob = new Blob([new Uint8Array(data)], { type: mimeType })
     triggerBrowserDownload(blob, fileName)
   }
 }
