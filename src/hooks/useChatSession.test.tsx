@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChatSession } from './useChatSession'
+import { sendMessageAsync } from '../api'
 
 const {
   createSessionMock,
@@ -169,6 +170,7 @@ vi.mock('../utils/perServerStorage', () => ({
 describe('useChatSession handleCommand', () => {
   beforeEach(() => {
     createSessionMock.mockReset()
+    vi.mocked(sendMessageAsync).mockReset()
     summarizeSessionMock.mockReset()
     executeCommandMock.mockReset()
     getSelectableAgentsMock.mockReset()
@@ -251,6 +253,22 @@ describe('useChatSession handleCommand', () => {
     )
     expect(settled).toBe(true)
     expect(commandResult).toBe(true)
+  })
+
+  it('exposes the submission error and clears it when the preserved draft is retried', async () => {
+    vi.mocked(sendMessageAsync).mockRejectedValueOnce(new Error('Attachment rejected by server')).mockResolvedValueOnce(undefined)
+    const { result } = renderHook(() => useChatSession({
+      paneId: 'pane-1', chatAreaRef: { current: null },
+      currentModel: { id: 'model-1', providerId: 'provider-1', variants: [] } as never,
+      refetchModels: vi.fn(async () => {}), sessionId: 'server-b::session-1',
+      navigateToSession: vi.fn(), navigateHome: vi.fn(),
+    }))
+    const attachments = [{ id: 'pdf', type: 'file' as const, displayName: 'report.pdf', mime: 'application/pdf', url: 'data:application/pdf;base64,AA==' }]
+    await act(async () => { expect(await result.current.handleSend('review report', attachments)).toBe(false) })
+    expect(result.current.sendError).toBe('Attachment rejected by server')
+    await act(async () => { expect(await result.current.handleSend('review report', attachments)).toBe(true) })
+    expect(result.current.sendError).toBeNull()
+    expect(sendMessageAsync).toHaveBeenLastCalledWith(expect.objectContaining({ text: 'review report', attachments }), 'server-b')
   })
 
   it('treats api commands as sent before execution finishes', async () => {

@@ -29,6 +29,8 @@
     "orJustType": "Or just type a message below to start with the current directory"
   },
   "inputBox": {
+    "sending": "Sending message…",
+    "sendFailed": "Message could not be sent. Your text and attachments are preserved; check the connection and try again.",
     "readingFiles": "Reading files…",
     "fileReadFailed": "Could not read an attachment. Please select it again.",
     "dropFilesHere": "Drop files here",

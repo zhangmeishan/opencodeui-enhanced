@@ -29,6 +29,8 @@
     "orJustType": "或在下方直接输入消息，使用当前目录开始"
   },
   "inputBox": {
+    "sending": "正在发送消息…",
+    "sendFailed": "消息发送失败，文字和附件已保留，请检查连接后重试。",
     "readingFiles": "正在读取文件…",
     "fileReadFailed": "有附件读取失败，请重新选择该文件。",
     "dropFilesHere": "拖放文件到此处",

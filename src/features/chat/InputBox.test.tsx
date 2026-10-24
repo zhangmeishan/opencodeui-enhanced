@@ -185,6 +185,34 @@ describe('InputBox slash command selection', () => {
     })
   })
 
+  it('shows rejected sends and releases the button so the preserved draft can be retried', async () => {
+    const onSend = vi.fn().mockRejectedValueOnce(new Error('Connection refused')).mockResolvedValueOnce(true)
+    render(<InputBox paneId="pane-test" onSend={onSend} />)
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'review this document' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Connection refused'))
+    expect(textarea.value).toBe('review this document')
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(textarea.value).toBe(''))
+    expect(onSend).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('blocks duplicate submissions in the same event turn and displays pending status', async () => {
+    let resolve!: (value: boolean) => void
+    const onSend = vi.fn(() => new Promise<boolean>(done => { resolve = done }))
+    render(<InputBox paneId="pane-test" onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'hello' } })
+    const send = screen.getByRole('button', { name: 'send' })
+    act(() => { fireEvent.click(send); fireEvent.click(send) })
+    expect(onSend).toHaveBeenCalledOnce()
+    expect(screen.getByRole('status')).toHaveTextContent('Sending message')
+    await act(async () => resolve(false))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Message could not be sent')
+  })
+
   it('clears api slash command drafts immediately after keyboard submission', async () => {
     slashCommands = [{ name: 'review', description: 'Run review', source: 'api' }]
     let resolveCommand: ((value: boolean) => void) | null = null

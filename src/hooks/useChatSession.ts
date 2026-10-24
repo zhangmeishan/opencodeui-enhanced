@@ -114,6 +114,7 @@ export function useChatSession({
     () => serverStorage.get(`${STORAGE_KEY_SELECTED_AGENT}:${paneId}`) || '',
   )
   const [restoredContent, setRestoredContent] = useState<{ sessionId: string; content: RevertHistoryItem } | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
 
   const setSelectedAgent = useCallback(
     (agentName: string) => {
@@ -134,6 +135,7 @@ export function useChatSession({
 
   useEffect(() => {
     routeSessionIdRef.current = routeSessionId
+    setSendError(null)
   }, [routeSessionId])
 
   /**
@@ -745,6 +747,7 @@ export function useChatSession({
         return true
       } catch (error) {
         handleError('send message', error)
+        setSendError(error instanceof Error ? error.message : String(error))
         if (sessionId) {
           if (rollbackSnapshot) {
             messageStore.restoreSendRollback(sessionId, rollbackSnapshot)
@@ -763,8 +766,10 @@ export function useChatSession({
   // Send message handler
   const handleSend = useCallback(
     async (content: string, attachments: Attachment[], options?: { agent?: string; variant?: string }) => {
+      setSendError(null)
       if (!currentModel) {
         handleError('send message', new Error('No model selected'))
+        setSendError('No model selected')
         return false
       }
 
@@ -1224,6 +1229,7 @@ export function useChatSession({
 
     // Handlers
     handleSend,
+    sendError,
     handleAbort,
     handleCommand,
     handleUndoWithAnimation,

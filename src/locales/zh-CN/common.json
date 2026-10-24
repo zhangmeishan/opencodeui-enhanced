@@ -36,6 +36,9 @@
   "emptyFolder": "空文件夹",
   "unknown": "未知",
   "error": "错误",
+  "errors": {
+    "requestTooLarge": "附件或消息总大小超过服务器的上传限制（HTTP 413）。请缩小文件、减少附件数量，或联系管理员调整上传限制。"
+  },
   "online": "在线",
   "offline": "离线",
   "connected": "已连接",

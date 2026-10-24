@@ -14,7 +14,7 @@ import {
 } from '../../../components/Icons'
 import { CircularProgress } from '../../../components/CircularProgress'
 import { formatTokens, formatCost, useTheme, useSessionStats } from '../../../hooks'
-import { useHasMessages } from '../../../store'
+import { useHasMessages, useShareSessionMeta } from '../../../store'
 
 // 状态指示器 - 圆环 + 右下角状态点
 function StatusIndicator({
@@ -83,10 +83,11 @@ export function SidebarFooter({
   const { mode: themeMode, setThemeWithAnimation: onThemeChange, isWideMode, toggleWideMode } = useTheme()
   // 统计与 hasMessages 留在 footer：流式时不让整个 SidePanel 跟着 messages 重渲
   const hasMessages = useHasMessages()
+  const { sessionId } = useShareSessionMeta()
   const stats = useSessionStats(contextLimit)
   const [isOpen, setIsOpen] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 260, fromBottom: false })
-  const [shareDialogOpen, setShareDialogOpen] = useState(false)
+  const [shareSessionId, setShareSessionId] = useState<string | null>(null)
   const [contextDialogOpen, setContextDialogOpen] = useState(false)
   const [isVisible, setIsVisible] = useState(false)
   const prevShowLabelsRef = useRef(showLabels)
@@ -94,6 +95,11 @@ export function SidebarFooter({
   const buttonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const closeTimeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const frameId = requestAnimationFrame(() => setShareSessionId(null))
+    return () => cancelAnimationFrame(frameId)
+  }, [sessionId])
 
   // 菜单中连接状态显示用
   const statusColorClass =
@@ -305,9 +311,11 @@ export function SidebarFooter({
             )}
 
             <button
+              type="button"
+              disabled={!sessionId}
               onClick={() => {
                 closeMenu()
-                setShareDialogOpen(true)
+                if (sessionId) setShareSessionId(sessionId)
               }}
               className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[length:var(--fs-sm)] text-text-300 hover:text-text-100 hover:bg-bg-200/50 transition-colors text-left"
             >
@@ -383,7 +391,7 @@ export function SidebarFooter({
       </div>
 
       {floatingMenu}
-      <ShareDialog isOpen={shareDialogOpen} onClose={() => setShareDialogOpen(false)} />
+      <ShareDialog key={sessionId || 'home'} isOpen={!!sessionId && shareSessionId === sessionId} onClose={() => setShareSessionId(null)} />
       <ContextDetailsDialog
         isOpen={contextDialogOpen}
         onClose={() => setContextDialogOpen(false)}

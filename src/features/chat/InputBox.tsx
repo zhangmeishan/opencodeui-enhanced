@@ -122,6 +122,7 @@ export interface InputBoxProps {
     options?: { agent?: string; variant?: string },
   ) => Promise<boolean> | boolean
   onAbort?: () => void
+  sendError?: string | null
   onCommand?: (command: string) => Promise<boolean> | boolean // 斜杠命令回调，接收完整命令字符串如 "/help"
   onNewChat?: () => void // 新建对话回调
   disabled?: boolean
@@ -168,6 +169,7 @@ function InputBoxComponent({
   paneId,
   onSend,
   onAbort,
+  sendError,
   onCommand,
   onNewChat,
   disabled,
@@ -207,6 +209,8 @@ function InputBoxComponent({
   // 附件状态（图片、文件、文件夹、agent）
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const submittingRef = useRef(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [readingFiles, setReadingFiles] = useState(0)
   const [fileError, setFileError] = useState(false)
   const readingFilesRef = useRef(0)
@@ -473,23 +477,31 @@ function InputBoxComponent({
 
   const runSubmit = useCallback(
     async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
-      if (isSubmitting) return false
+      if (submittingRef.current) return false
 
+      submittingRef.current = true
       setIsSubmitting(true)
+      setSubmitError(null)
       try {
         const result = await submit()
         if (result === false) {
+          setSubmitError(t('inputBox.sendFailed'))
           onFailure?.()
           return false
         }
 
         onSuccess?.()
         return true
+      } catch (error) {
+        setSubmitError(error instanceof Error ? error.message : t('inputBox.sendFailed'))
+        onFailure?.()
+        return false
       } finally {
+        submittingRef.current = false
         setIsSubmitting(false)
       }
     },
-    [isSubmitting],
+    [t],
   )
 
   const handleSend = useCallback(() => {
@@ -1370,6 +1382,12 @@ function InputBoxComponent({
                   </div>
 
                   {/* Text Input - 简单的 textarea，直接显示文本 */}
+                  {(submitError || sendError) && (
+                    <div role="alert" className="px-4 pt-2 text-danger-100 text-[length:var(--fs-sm)]">
+                      {t('inputBox.sendFailed')} {sendError || (submitError !== t('inputBox.sendFailed') ? submitError : '')}
+                    </div>
+                  )}
+                  {isSubmitting && <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">{t('inputBox.sending')}</div>}
                   {readingFiles > 0 && <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">{t('inputBox.readingFiles')}</div>}
                   {fileError && <div role="alert" className="px-4 pt-2 text-danger-100 text-[length:var(--fs-sm)]">{t('inputBox.fileReadFailed')}</div>}
                   <div className="pt-4 pb-2">

@@ -10,6 +10,7 @@
 import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk/v2/client'
 import { serverStore, makeBasicAuthHeader } from '../store/serverStore'
 import { isTauri } from '../utils/tauri'
+import i18n from '../i18n'
 
 // Tauri fetch 缓存
 let _tauriFetch: typeof globalThis.fetch | null = null
@@ -37,7 +38,8 @@ function createAbortError(message: string) {
 
 async function trackedFetch(input: RequestInfo | URL, init: RequestInit | undefined, generation: number): Promise<Response> {
   const controller = new AbortController()
-  const externalSignal = init?.signal
+  // The generated SDK passes a Request (including its signal), without init.
+  const externalSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
   const abortFromExternal = () => controller.abort(externalSignal?.reason)
 
   if (externalSignal?.aborted) {
@@ -53,10 +55,16 @@ async function trackedFetch(input: RequestInfo | URL, init: RequestInit | undefi
       throw createAbortError('Stale API request')
     }
 
-    return await getFetchImpl()(input, {
+    const response = await getFetchImpl()(input, {
       ...init,
       signal: controller.signal,
     })
+    // Proxies often return an HTML error page for 413. Preserve the actual
+    // cause before the SDK replaces it with its generic HTML/version error.
+    if (response.status === 413) {
+      throw new Error(i18n.t('common:errors.requestTooLarge'))
+    }
+    return response
   } finally {
     externalSignal?.removeEventListener('abort', abortFromExternal)
     _apiRequestControllers.delete(controller)

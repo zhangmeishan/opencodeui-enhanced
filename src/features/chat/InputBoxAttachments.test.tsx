@@ -146,6 +146,22 @@ describe('InputBox attachment handling', () => {
     )
   })
 
+  it('preserves the document and text on failure and resends both on retry', async () => {
+    selectedFiles = [new File(['pdf'], 'report.pdf', { type: 'application/pdf' })]
+    const onSend = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    render(<InputBox paneId="test" onSend={onSend} sendError="Server rejected attachment" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'review this report' } })
+    fireEvent.click(screen.getByRole('button', { name: 'attach file' }))
+    await waitFor(() => expect(screen.getByTestId('attachment-count')).toHaveTextContent('1'))
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Server rejected attachment'))
+    expect(screen.getByRole('textbox')).toHaveValue('review this report')
+    expect(screen.getByTestId('attachment-count')).toHaveTextContent('1')
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(screen.getByTestId('attachment-count')).toHaveTextContent('0'))
+    expect(onSend.mock.calls[1]).toEqual(onSend.mock.calls[0])
+  })
+
   it('accepts pasted and dropped documents', async () => {
     render(<InputBox paneId="test" onSend={vi.fn()} />)
     const file = new File(['pdf'], 'report.pdf', { type: 'application/pdf' })

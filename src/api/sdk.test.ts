@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '../i18n'
 
 const { createOpencodeClientMock, getActiveBaseUrlMock, getActiveAuthMock, isTauriMock } = vi.hoisted(() => ({
   createOpencodeClientMock: vi.fn((config: unknown) => ({ config })),
@@ -71,5 +72,43 @@ describe('sdk request lifecycle', () => {
       name: 'AbortError',
     })
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('honors the abort signal carried on the SDK Request object', async () => {
+    const { getSDKClient } = await import('./sdk')
+    const controller = new AbortController()
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    }))
+    const client = getSDKClient() as unknown as MockClient
+    const request = client.config.fetch(new Request('http://127.0.0.1:4096/session/test/prompt_async', { method: 'POST', signal: controller.signal }))
+    controller.abort(new DOMException('Message submission timed out', 'TimeoutError'))
+    await expect(request).rejects.toMatchObject({ name: 'TimeoutError' })
+  })
+
+  it.each(['en', 'zh-CN'])('reports HTML 413 responses as an upload limit error in %s', async language => {
+    const previousLanguage = i18n.language
+    await i18n.changeLanguage(language)
+    try {
+      const { getSDKClient } = await import('./sdk')
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>413 Request Entity Too Large</html>', {
+        status: 413,
+        headers: { 'content-type': 'text/html' },
+      }))
+      const client = getSDKClient() as unknown as MockClient
+      await expect(client.config.fetch('http://127.0.0.1:4096/session/test/prompt_async')).rejects.toThrow(
+        i18n.t('common:errors.requestTooLarge'),
+      )
+    } finally {
+      await i18n.changeLanguage(previousLanguage)
+    }
+  })
+
+  it('preserves successful empty submission responses', async () => {
+    const { getSDKClient } = await import('./sdk')
+    const response = new Response(null, { status: 204 })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
+    const client = getSDKClient() as unknown as MockClient
+    expect(await client.config.fetch('http://127.0.0.1:4096/session/test/prompt_async')).toBe(response)
   })
 })

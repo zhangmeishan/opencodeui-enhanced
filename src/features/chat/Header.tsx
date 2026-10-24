@@ -47,6 +47,7 @@ interface SessionTitleControlProps {
   onShare: () => void
   clickToRenameTitle: string
   shareTitle: string
+  canShare: boolean
 }
 
 function SessionTitleControl({
@@ -62,6 +63,7 @@ function SessionTitleControl({
   onShare,
   clickToRenameTitle,
   shareTitle,
+  canShare,
 }: SessionTitleControlProps) {
   const inputClass = compact
     ? 'px-2 py-1.5 text-[length:var(--fs-base)] font-medium text-text-100 bg-transparent border-none outline-none w-[160px] h-full'
@@ -102,7 +104,7 @@ function SessionTitleControl({
       {!isEditingTitle && (
         <>
           <div className={dividerClass} />
-          <button type="button" className={shareButtonClass} title={shareTitle} aria-label={shareTitle} onClick={onShare}>
+          <button type="button" disabled={!canShare} className={shareButtonClass} title={shareTitle} aria-label={shareTitle} onClick={onShare}>
             <ChevronDownIcon size={12} />
           </button>
         </>
@@ -130,7 +132,7 @@ export function Header({
   const { currentDirectory } = useDirectory()
   const { presentation, interaction } = useChatViewport()
 
-  const [shareDialogOpen, setShareDialogOpen] = useState(false)
+  const [shareSessionId, setShareSessionId] = useState<string | null>(null)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const titleInputRef = useRef<HTMLInputElement>(null)
@@ -147,6 +149,7 @@ export function Header({
 
   useEffect(() => {
     setIsEditingTitle(false)
+    setShareSessionId(null)
   }, [sessionId])
 
   useEffect(() => {
@@ -189,7 +192,8 @@ export function Header({
       setIsEditingTitle={setIsEditingTitle}
       handleRename={handleRename}
       handleStartEdit={handleStartEdit}
-      onShare={() => setShareDialogOpen(true)}
+      onShare={() => { if (sessionId) setShareSessionId(sessionId) }}
+      canShare={!!sessionId}
       clickToRenameTitle={t('header.clickToRename')}
       shareTitle={t('header.shareSession')}
     />
@@ -269,7 +273,7 @@ export function Header({
         </div>
       </div>
 
-      <ShareDialog isOpen={shareDialogOpen} onClose={() => setShareDialogOpen(false)} />
+      <ShareDialog key={sessionId || 'home'} isOpen={!!sessionId && shareSessionId === sessionId} onClose={() => setShareSessionId(null)} />
 
       <div data-chat-header-shadow className="absolute top-full left-0 right-0 h-8 bg-gradient-to-b from-bg-100 to-transparent pointer-events-none z-10" />
     </div>

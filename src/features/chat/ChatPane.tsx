@@ -303,6 +303,7 @@ export const ChatPane = memo(function ChatPane({
     registerInputBox,
 
     handleSend,
+    sendError,
     handleAbort,
     handleCommand,
     handleUndoWithAnimation,
@@ -934,6 +935,7 @@ export const ChatPane = memo(function ChatPane({
         <InputBox
           paneId={paneId}
           onSend={handleSend}
+          sendError={sendError}
           onAbort={handleAbort}
           onCommand={handleCommand}
           onNewChat={handleNewSession}

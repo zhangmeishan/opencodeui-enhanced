@@ -238,5 +238,14 @@ export async function sendMessage(params: SendMessageParams, serverId?: string):
 export async function sendMessageAsync(params: SendMessageParams, serverId?: string): Promise<void> {
   const target = resolveSessionTarget(params.sessionId, serverId)
   const sdk = getSDKClient(target.serverId)
-  unwrap(await sdk.session.promptAsync(buildPromptParams({ ...params, sessionId: target.sessionId }, target.serverId)))
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new DOMException('Message submission timed out', 'TimeoutError')), 60_000)
+  try {
+    unwrap(await sdk.session.promptAsync(
+      buildPromptParams({ ...params, sessionId: target.sessionId }, target.serverId),
+      { signal: controller.signal },
+    ))
+  } finally {
+    clearTimeout(timeout)
+  }
 }

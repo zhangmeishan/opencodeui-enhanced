@@ -36,6 +36,9 @@
   "emptyFolder": "Empty folder",
   "unknown": "Unknown",
   "error": "Error",
+  "errors": {
+    "requestTooLarge": "The attachments or message exceed the server's upload limit (HTTP 413). Use smaller files, reduce the number of attachments, or contact your administrator to adjust the upload limit."
+  },
   "online": "Online",
   "offline": "Offline",
   "connected": "Connected",
