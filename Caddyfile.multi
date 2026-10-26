@@ -1,0 +1,33 @@
+:3000 {
+    # OpenCode liucj (default)
+    handle_path /api/* {
+        reverse_proxy host.docker.internal:4097 {
+            header_up Host {upstream_hostport}
+            header_up Authorization {http.request.header.Authorization}
+            flush_interval -1
+        }
+    }
+
+    # OpenCode masonzms (second backend)
+    handle_path /api-mason/* {
+        reverse_proxy host.docker.internal:4096 {
+            header_up Host {upstream_hostport}
+            header_up Authorization {http.request.header.Authorization}
+            flush_interval -1
+        }
+    }
+
+    # Office editor configuration and locally served selection-menu plugin.
+    handle_path /office-api/* {
+        reverse_proxy {$OFFICE_BRIDGE_URL:host.docker.internal:18093}
+    }
+
+    # Frontend files
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+
+    encode gzip
+}

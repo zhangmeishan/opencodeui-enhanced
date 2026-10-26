@@ -27,7 +27,9 @@ import {
   reorderServerWorkspaces,
 } from '../../../utils/serverWorkspaces'
 import { deleteSession, updateSession, type ApiSession } from '../../../api'
+import { getPath } from '../../../api'
 import { isSameDirectory } from '../../../utils'
+import { isWithinWorkspace } from '../../../utils/workspaceBoundary'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
 import { uiErrorHandler } from '../../../utils'
 import { isWslServerId } from '../../wsl/settings-model'
@@ -117,6 +119,12 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
   const health = getHealth(serverId)
   const connectionState = useServerConnectionState(serverId)
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([])
+  const [workingDirectory, setWorkingDirectory] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    getPath(serverId).then(info => { if (!cancelled) setWorkingDirectory(info.directory) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [serverId])
 
   // 该服务器的工作区 = 该服务器 per-server storage 的 saved-directories（与单服务器模式同一套存储）
   // 版本号在写入时递增 → 触发重渲染并重读数据
@@ -132,18 +140,9 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
 
   // 展示顺序：global 固定第一，工作区按存储顺序
   const projects = useMemo<FolderRecentProject[]>(() => {
-    const globalProject: FolderRecentProject = {
-      id: 'global',
-      worktree: '',
-      name: t('sidebar.global'),
-      sectionKind: 'project',
-      canReorder: true,
-    }
-    return [
-      globalProject,
-      ...workspaces.map(dir => ({ ...createDirectoryProject(dir, 'project'), canReorder: true })),
-    ]
-  }, [workspaces, t])
+    const directories = [...new Set([workingDirectory, ...workspaces].filter(path => isWithinWorkspace(path, workingDirectory)))]
+    return directories.map(dir => ({ ...createDirectoryProject(dir, 'project'), canReorder: workspaces.includes(dir) }))
+  }, [workspaces, workingDirectory])
 
   // 仅当当前选中的 session 属于本服务器时才高亮（复合 key 前缀匹配），
   // 避免多个服务器连同一后端时同名 session 串高亮
@@ -160,6 +159,7 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
   const { setCurrentDirectory } = useDirectoryCtx()
   const handleSelectProject = useCallback(
     (project: FolderRecentProject) => {
+      if (!isWithinWorkspace(project.worktree, workingDirectory)) return
       const wasFocusedServer = multiServerStore.getFocusedServerId() === serverId
       // 项目选择器焦点同步到该文件夹所在的服务器
       multiServerStore.setFocusedServerId(serverId)
@@ -174,7 +174,7 @@ const ServerFolderGroup = memo(function ServerFolderGroup({
       if (wasFocusedServer && currentDirectory && isSameDirectory(currentDirectory, project.worktree)) return
       setCurrentDirectory(project.worktree)
     },
-    [serverId, currentDirectory, setCurrentDirectory],
+    [serverId, currentDirectory, setCurrentDirectory, workingDirectory],
   )
 
   const displayName = server?.name ?? serverId

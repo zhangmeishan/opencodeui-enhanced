@@ -88,6 +88,8 @@
     "changePermissionSettings": "始终允许将交给后端处理，可在设置中更改。"
   },
   "projectDialog": {
+    "outsideWorkspace": "只能选择当前服务工作目录及其子目录。",
+    "rootUnavailable": "暂时无法读取此服务的工作目录，请检查连接后重试。",
     "typePath": "输入路径...",
     "parent": "..（上级目录）",
     "noMatchingFolders": "没有匹配的文件夹",
@@ -122,6 +124,7 @@
     "redoAll": "Redo All"
   },
   "sidebar": {
+    "files": "文件",
     "allProjects": "全部项目",
     "global": "全局",
     "globalProjectHint": "非 Git 项目，通常是 opencode 启动目录",
@@ -131,7 +134,7 @@
     "addProject": "添加项目...",
     "searchChats": "搜索对话...",
     "clearSearch": "清除搜索",
-    "recents": "最近",
+    "recents": "会话",
     "active": "活跃",
     "noActiveSessions": "没有活跃会话",
     "notifications": "通知",

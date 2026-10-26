@@ -3,6 +3,7 @@
 // ============================================
 
 import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { serializeContextAttachment } from '../utils/contextSnapshot'
 import {
   messageStore,
   useSessionFamily,
@@ -326,6 +327,14 @@ export function useChatSession({
       ]
 
       for (const attachment of input.attachments) {
+        if (attachment.type === 'text' && attachment.content !== undefined) {
+          parts.push({
+            id: attachment.id || `${input.messageId}:context:${parts.length}`,
+            type: 'text', text: serializeContextAttachment(attachment), synthetic: true,
+            sessionID: input.sessionId, messageID: input.messageId,
+          })
+          continue
+        }
         if (attachment.type === 'agent') {
           parts.push({
             id: attachment.id || `${input.messageId}:agent:${parts.length}`,

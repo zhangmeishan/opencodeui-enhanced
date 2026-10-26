@@ -1,0 +1,31 @@
+{
+  "documentServerPublicUrl": "https://office.example.com",
+  "documentServerInternalUrl": "http://onlyoffice",
+  "bridgeDocumentUrl": "http://office-bridge:8093",
+  "frontendOrigins": ["https://chat.example.com", "http://192.0.2.10:2635"],
+  "maxBytes": 52428800,
+  "mappings": [
+    {
+      "id": "opencode-4097",
+      "apiUrls": ["/api"],
+      "auth": "none",
+      "roots": [
+        {
+          "remote": "/workspace/service-a",
+          "local": "/projects/service-a"
+        }
+      ]
+    },
+    {
+      "id": "opencode-4096",
+      "apiUrls": ["/api-mason"],
+      "auth": "none",
+      "roots": [
+        {
+          "remote": "/work/service-b",
+          "local": "/projects/service-b"
+        }
+      ]
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import { CodePreview } from '../../components/CodePreview'
 import { detectLanguage } from '../../utils/languageUtils'
 import { useFullscreen } from '../../contexts/useFullscreen'
 import type { FullscreenLayer } from '../../contexts/FullscreenContext.shared'
+import { TransferProgressBar } from '../../components/TransferProgressBar'
 
 // ============================================
 // 常量
@@ -143,7 +144,7 @@ function DownloadButton({
   fileDownload: ReturnType<typeof useFileDownload>
 }) {
   const { t } = useTranslation(['commands', 'common'])
-  const { download, isDownloading, error } = fileDownload
+  const { download, isDownloading, error, progress } = fileDownload
 
   return (
     <>
@@ -157,7 +158,16 @@ function DownloadButton({
       >
         <DownloadIcon size={16} />
       </button>
-      {error && <span role="alert" className="text-danger-100">{t('attachment.downloadFailed')}</span>}
+      {error && (
+        <span role="alert" className="text-danger-100">
+          {t('attachment.downloadFailed')}
+        </span>
+      )}
+      {progress && (
+        <div className="w-56 max-w-[50vw]">
+          <TransferProgressBar progress={progress} label={`${t('common:download')} ${attachment.displayName}`} />
+        </div>
+      )}
     </>
   )
 }

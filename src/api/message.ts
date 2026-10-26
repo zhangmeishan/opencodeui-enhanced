@@ -4,6 +4,7 @@
 // ============================================
 
 import { getSDKClient, unwrap } from './sdk'
+import { contextAttachmentFromText, serializeContextAttachment } from '../utils/contextSnapshot'
 import { resolveSessionTarget } from '../utils/sessionKey'
 import { formatPathForApi } from '../utils/directoryUtils'
 import type {
@@ -89,7 +90,10 @@ export function extractUserMessageContent(message: UserContentSource): RevertedM
   }
 
   for (const part of parts) {
-    if (isFileUserContentPart(part)) {
+    if (isTextUserContentPart(part) && part.synthetic) {
+      const context = contextAttachmentFromText(part.text, part.id)
+      if (context) attachments.push(context)
+    } else if (isFileUserContentPart(part)) {
       const isFolder = part.mime === 'application/x-directory'
       const sourcePath = getSourcePath(part.source)
       attachments.push({
@@ -185,6 +189,10 @@ function buildPromptParams(params: SendMessageParams, serverId?: string): Prompt
           : undefined,
       }
       parts.push(agentPart)
+    } else if (attachment.type === 'text' && attachment.content !== undefined) {
+      // Context cards stay compact in the composer but send the actual snapshot
+      // to the model, including unsaved edits and selected document text.
+      parts.push({ type: 'text', text: serializeContextAttachment(attachment), synthetic: true })
     } else {
       const fileUrl = toFileUrl(attachment.url || '')
       if (!fileUrl) {
@@ -229,7 +237,9 @@ function buildPromptParams(params: SendMessageParams, serverId?: string): Prompt
 export async function sendMessage(params: SendMessageParams, serverId?: string): Promise<SendMessageResponse> {
   const target = resolveSessionTarget(params.sessionId, serverId)
   const sdk = getSDKClient(target.serverId)
-  return unwrap<SendMessageResponse>(await sdk.session.prompt(buildPromptParams({ ...params, sessionId: target.sessionId }, target.serverId)))
+  return unwrap<SendMessageResponse>(
+    await sdk.session.prompt(buildPromptParams({ ...params, sessionId: target.sessionId }, target.serverId)),
+  )
 }
 
 /**
@@ -239,12 +249,16 @@ export async function sendMessageAsync(params: SendMessageParams, serverId?: str
   const target = resolveSessionTarget(params.sessionId, serverId)
   const sdk = getSDKClient(target.serverId)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new DOMException('Message submission timed out', 'TimeoutError')), 60_000)
+  const timeout = setTimeout(
+    () => controller.abort(new DOMException('Message submission timed out', 'TimeoutError')),
+    60_000,
+  )
   try {
-    unwrap(await sdk.session.promptAsync(
-      buildPromptParams({ ...params, sessionId: target.sessionId }, target.serverId),
-      { signal: controller.signal },
-    ))
+    unwrap(
+      await sdk.session.promptAsync(buildPromptParams({ ...params, sessionId: target.sessionId }, target.serverId), {
+        signal: controller.signal,
+      }),
+    )
   } finally {
     clearTimeout(timeout)
   }

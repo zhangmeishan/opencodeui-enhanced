@@ -7,6 +7,8 @@ import { MenuItem } from '../../../components/ui/MenuItem'
 import { TrashIcon, KeyIcon, PencilIcon, RetryIcon, PlugIcon, CircleIcon } from '../../../components/Icons'
 import { useServerStore, useRouter } from '../../../hooks'
 import { messageStore } from '../../../store'
+import { paneLayoutStore } from '../../../store/paneLayoutStore'
+import { layoutStore } from '../../../store/layoutStore'
 import { useMultiServerStore, multiServerStore } from '../../../store/multiServerStore'
 import { useWslStore } from '../../../store/wslStore'
 import { settingsFieldClass, SettingsSection, SettingRow, Toggle } from './SettingsUI'
@@ -566,7 +568,10 @@ export function ServersSettings() {
       }
 
       setActiveServer(id) // 内部触发 serverChangeListeners → reconnectSSE()
-      navigateHome()
+      multiServerStore.setFocusedServerId(id)
+      paneLayoutStore.reset()
+      layoutStore.activateServerScope(id)
+      navigateHome(id)
       void checkHealth(id)
     },
     [activeServer?.id, checkHealth, routeSessionId, setActiveServer, navigateHome],

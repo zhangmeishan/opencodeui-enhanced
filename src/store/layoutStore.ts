@@ -2,6 +2,17 @@
 // LayoutStore - 全局 UI 布局状态
 // ============================================
 
+import { discardFileDraft, fileDraftKey, hasDirtyFileDraft, getFileDraft } from './fileDraftStore'
+import i18n from '../i18n'
+
+function confirmDiscardFiles(files: PreviewFile[]): boolean {
+  if (files.some(file => getFileDraft(fileDraftKey(file.path, file.directory, file.serverId))?.saving)) return false
+  const dirty = files.filter(file => hasDirtyFileDraft(file.path, file.directory, file.serverId))
+  if (dirty.length && !window.confirm(i18n.t('components:fileExplorer.discardEdits'))) return false
+  for (const file of dirty) discardFileDraft(fileDraftKey(file.path, file.directory, file.serverId))
+  return true
+}
+
 // 面板位置
 export type PanelPosition = 'bottom' | 'right'
 
@@ -35,6 +46,8 @@ export interface PanelTab {
 export interface PreviewFile {
   path: string
   name: string
+  directory?: string
+  serverId?: string
   targetLine?: number
   targetKey?: string
   targetRanges?: Array<{ from: number; to: number }>
@@ -323,6 +336,49 @@ export class LayoutStore {
   }
   private subscribers = new Set<Subscriber>()
   private currentTerminalDirectory: string | null = null
+  private serverScope: string | null = null
+  private serverLayouts = new Map<string, Pick<LayoutState, 'panelTabs' | 'activeTabId' | 'rightPanelOpen' | 'bottomPanelOpen'> & { terminalDirectory: string | null }>()
+
+  getServerScope(): string | null { return this.serverScope }
+
+  activateServerScope(serverId: string) {
+    if (this.serverScope === serverId) return
+    if (this.serverScope !== null) {
+      this.persistTerminalLayout()
+      this.serverLayouts.set(this.serverScope, {
+        panelTabs: this.state.panelTabs, activeTabId: { ...this.state.activeTabId },
+        rightPanelOpen: this.state.rightPanelOpen, bottomPanelOpen: this.state.bottomPanelOpen,
+        terminalDirectory: this.currentTerminalDirectory,
+      })
+    }
+    const first = this.serverScope === null
+    this.serverScope = serverId
+    const saved = this.serverLayouts.get(serverId)
+    if (saved) {
+      this.state.panelTabs = saved.panelTabs
+      this.state.activeTabId = { ...saved.activeTabId }
+      this.state.rightPanelOpen = saved.rightPanelOpen
+      this.state.bottomPanelOpen = saved.bottomPanelOpen
+      this.currentTerminalDirectory = saved.terminalDirectory
+    } else {
+      // Preserve panel placement, but never carry files or terminal connections across services.
+      this.state.panelTabs = this.state.panelTabs.filter(tab => tab.type !== 'terminal').map(tab => ({
+        id: tab.id, type: tab.type, position: tab.position,
+        ...(tab.type === 'files' ? { previewFile: null, previewFiles: [] } : {}),
+      }))
+      this.state.activeTabId = {
+        right: this.state.panelTabs.find(tab => tab.position === 'right')?.id ?? null,
+        bottom: this.state.panelTabs.find(tab => tab.position === 'bottom')?.id ?? null,
+      }
+      if (!first) { this.state.rightPanelOpen = false; this.state.bottomPanelOpen = false }
+      this.currentTerminalDirectory = null
+    }
+    this.notify()
+  }
+
+  private terminalDirectoryKey(directory: string) {
+    return this.serverScope ? `${this.serverScope}::${directory}` : directory
+  }
 
   private persistPanelLayout() {
     try {
@@ -359,7 +415,7 @@ export class LayoutStore {
 
     try {
       const layoutMap = this.readTerminalLayoutMap()
-      layoutMap.directories[this.currentTerminalDirectory] = {
+      layoutMap.directories[this.terminalDirectoryKey(this.currentTerminalDirectory)] = {
         order: {
           bottom: this.getTabsForPosition('bottom').map(tab => tab.id),
           right: this.getTabsForPosition('right').map(tab => tab.id),
@@ -663,6 +719,7 @@ export class LayoutStore {
     if (index === -1) return
 
     const tab = this.state.panelTabs[index]
+    if (tab.type === 'files' && !confirmDiscardFiles(tab.previewFiles ?? [])) return
     const position = tab.position
     this.state.panelTabs.splice(index, 1)
 
@@ -813,8 +870,15 @@ export class LayoutStore {
   // ============================================
 
   openFilePreview(file: PreviewFile, position?: PanelPosition) {
+    if (this.serverScope && file.serverId && file.serverId !== this.serverScope) return false
     const targetTab = this.getTargetFilesTab(position)
-    if (!targetTab) return
+    if (!targetTab) return false
+
+    // A file's path is relative to its project and server, not the focused chat.
+    if (file.directory !== targetTab.previewFile?.directory || file.serverId !== targetTab.previewFile?.serverId) {
+      if (!confirmDiscardFiles(targetTab.previewFiles ?? [])) return false
+      targetTab.previewFiles = []
+    }
 
     const previewFiles = targetTab.previewFiles ?? []
     const existingIndex = previewFiles.findIndex(item => item.path === file.path)
@@ -826,6 +890,7 @@ export class LayoutStore {
     this.state.activeTabId[targetTab.position] = targetTab.id
     this.setPanelOpen(targetTab.position, true)
     this.notify()
+    return true
   }
 
   activateFilePreview(tabId: string, path: string) {
@@ -841,6 +906,8 @@ export class LayoutStore {
     const previewFiles = tab?.previewFiles
     const targetPath = path ?? tab?.previewFile?.path
     if (!tab || !previewFiles || !targetPath) return
+    const closing = previewFiles.find(file => file.path === targetPath)
+    if (closing && !confirmDiscardFiles([closing])) return
 
     const index = previewFiles.findIndex(item => item.path === targetPath)
     if (index === -1) return
@@ -863,6 +930,7 @@ export class LayoutStore {
   closeAllFilePreviews(tabId: string) {
     const tab = this.state.panelTabs.find(item => item.id === tabId && item.type === 'files')
     if (!tab) return
+    if (!confirmDiscardFiles(tab.previewFiles ?? [])) return
     tab.previewFile = null
     tab.previewFiles = []
     this.notify()
@@ -949,11 +1017,12 @@ export class LayoutStore {
     this.currentTerminalDirectory = directory || null
   }
 
-  syncTerminalSessions(directory: string | undefined, sessions: TerminalTab[]) {
+  syncTerminalSessions(directory: string | undefined, sessions: TerminalTab[], serverId?: string) {
+    if (serverId && this.serverScope && serverId !== this.serverScope) return
     this.currentTerminalDirectory = directory || null
 
     const layoutMap = this.readTerminalLayoutMap()
-    const savedLayout = directory ? layoutMap.directories[directory] : undefined
+    const savedLayout = directory ? layoutMap.directories[this.terminalDirectoryKey(directory)] : undefined
     const existingTerminalById = new Map(this.state.panelTabs.filter(tab => tab.type === 'terminal').map(tab => [tab.id, tab]))
     const sessionById = new Map(
       sessions.map(session => [
@@ -1048,6 +1117,7 @@ export class LayoutStore {
   }
 
   addTerminalTab(tab: TerminalTab, openPanel = true, position: PanelPosition = 'bottom') {
+    if (this.serverScope && tab.serverId && tab.serverId !== this.serverScope) return
     const existing = this.state.panelTabs.find(t => t.id === tab.id && t.position === position)
     if (existing) {
       existing.shellTitle = existing.shellTitle ?? tab.shellTitle ?? tab.title
@@ -1078,11 +1148,13 @@ export class LayoutStore {
     this.setActiveTab('bottom', id)
   }
 
-  updateTerminalTab(id: string, updates: Partial<Omit<TerminalTab, 'id'>>) {
+  updateTerminalTab(id: string, updates: Partial<Omit<TerminalTab, 'id'>>, serverId?: string) {
+    if (serverId && this.serverScope && serverId !== this.serverScope) return
     this.updateTab(id, updates)
   }
 
-  updateTerminalShellTitle(id: string, shellTitle: string, manualMode: boolean) {
+  updateTerminalShellTitle(id: string, shellTitle: string, manualMode: boolean, serverId?: string) {
+    if (serverId && this.serverScope && serverId !== this.serverScope) return
     const tab = this.state.panelTabs.find(item => item.id === id && item.type === 'terminal')
     if (!tab) return
     tab.shellTitle = shellTitle
@@ -1100,7 +1172,8 @@ export class LayoutStore {
     this.notify()
   }
 
-  updateTerminalSnapshot(id: string, snapshot: Pick<PanelTab, 'buffer' | 'scrollY' | 'cursor' | 'rows' | 'cols'>) {
+  updateTerminalSnapshot(id: string, snapshot: Pick<PanelTab, 'buffer' | 'scrollY' | 'cursor' | 'rows' | 'cols'>, serverId?: string) {
+    if (serverId && this.serverScope && serverId !== this.serverScope) return
     const tab = this.state.panelTabs.find(item => item.id === id && item.type === 'terminal')
     if (!tab) return
     if (

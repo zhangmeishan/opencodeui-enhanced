@@ -13,6 +13,12 @@ const ROOT_DIRECTORY_CACHE_TTL_MS = 10_000
 const rootDirectoryCache = new Map<string, { data: FileNode[]; expiresAt: number }>()
 const rootDirectoryInflight = new Map<string, Promise<FileNode[]>>()
 
+export function invalidateDirectoryCache(directory?: string, serverId?: string): void {
+  const key = getRootDirectoryCacheKey(directory, serverId)
+  rootDirectoryCache.delete(key)
+  rootDirectoryInflight.delete(key)
+}
+
 function isRootDirectoryPath(path: string): boolean {
   return path === '' || path === '.' || path === './'
 }
@@ -77,11 +83,13 @@ export async function listDirectory(path: string, directory?: string, serverId?:
 
   const request = fetchDirectory(path === '' ? '.' : path, directory, serverId)
     .then(data => {
-      rootDirectoryCache.set(key, { data, expiresAt: Date.now() + ROOT_DIRECTORY_CACHE_TTL_MS })
+      if (rootDirectoryInflight.get(key) === request) {
+        rootDirectoryCache.set(key, { data, expiresAt: Date.now() + ROOT_DIRECTORY_CACHE_TTL_MS })
+      }
       return data
     })
     .finally(() => {
-      rootDirectoryInflight.delete(key)
+      if (rootDirectoryInflight.get(key) === request) rootDirectoryInflight.delete(key)
     })
 
   rootDirectoryInflight.set(key, request)

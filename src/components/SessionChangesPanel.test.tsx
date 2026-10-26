@@ -317,6 +317,6 @@ describe('SessionChangesPanel', () => {
     fireEvent.contextMenu(fileButtons[0])
     fireEvent.click(screen.getByRole('button', { name: 'Open in Files' }))
 
-    expect(openFilePreview).toHaveBeenCalledWith({ path: 'src/turn.ts', name: 'turn.ts' }, 'bottom')
+    expect(openFilePreview).toHaveBeenCalledWith({ path: 'src/turn.ts', name: 'turn.ts', directory: '/repo', serverId: undefined }, 'bottom')
   })
 })

@@ -5,6 +5,9 @@ import { clearMermaidRenderCache } from './mermaidRenderCache'
 import { SessionNavigationContext } from '../contexts/SessionNavigationContext'
 import { readFileBytes } from '../api/fileDownload'
 import { saveData } from '../utils/downloadUtils'
+import { layoutStore } from '../store/layoutStore'
+import { fileNavigationStore } from '../store/fileNavigationStore'
+vi.mock('../api/client', () => ({ getPath: vi.fn(async () => ({ directory: '/workspace' })) }))
 
 vi.mock('../api/fileDownload', () => ({ readFileBytes: vi.fn() }))
 vi.mock('../utils/downloadUtils', () => ({ saveData: vi.fn() }))
@@ -1522,7 +1525,8 @@ $$`
     '[下载报告](./output/报告%20最终.docx)',
     '| 文件 |\n| --- |\n| [下载报告](./output/报告%20最终.docx) |',
     '<a href="./output/报告%20最终.docx">下载报告</a>',
-  ])('downloads file links from the conversation server in all rendering paths: %s', async content => {
+  ])('opens file links as previews in all rendering paths without downloading: %s', async content => {
+    const open = vi.spyOn(layoutStore, 'openFilePreview').mockReturnValue(true)
     vi.mocked(readFileBytes).mockReset().mockResolvedValue(new Uint8Array([0, 255, 42]))
     vi.mocked(saveData).mockClear()
     render(
@@ -1531,8 +1535,11 @@ $$`
       </SessionNavigationContext.Provider>,
     )
     fireEvent.click(screen.getByRole('link', { name: '下载报告' }))
-    await waitFor(() => expect(saveData).toHaveBeenCalledWith(new Uint8Array([0, 255, 42]), '报告 最终.docx', 'application/octet-stream'))
-    expect(readFileBytes).toHaveBeenCalledWith('./output/报告 最终.docx', '/workspace/b', 'server-b')
+    await waitFor(() => expect(open).toHaveBeenCalledWith({ path: 'output/报告 最终.docx', name: '报告 最终.docx', directory: '/workspace/b', serverId: 'server-b' }, 'right'))
+    expect(fileNavigationStore.getSnapshot()?.file.path).toBe('output/报告 最终.docx')
+    expect(readFileBytes).not.toHaveBeenCalled()
+    expect(saveData).not.toHaveBeenCalled()
+    open.mockRestore()
   })
 
   it('reports failed downloads without saving an empty file and allows retry', async () => {
@@ -1544,10 +1551,12 @@ $$`
         <MarkdownRenderer content="[report](report.pdf)" />
       </SessionNavigationContext.Provider>,
     )
-    fireEvent.click(screen.getByRole('link', { name: 'report' }))
+    fireEvent.contextMenu(screen.getByRole('link', { name: 'report' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Download failed'))
     expect(saveData).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('link', { name: 'report' }))
+    fireEvent.contextMenu(screen.getByRole('link', { name: 'report' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
     await waitFor(() => expect(saveData).toHaveBeenCalledOnce())
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     warn.mockRestore()

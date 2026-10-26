@@ -4,7 +4,18 @@
 // 性能优化：使用 CSS 变量 + requestAnimationFrame 处理 resize
 // ============================================
 
-import { memo, useCallback, useMemo, useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import {
+  lazy,
+  Suspense,
+  memo,
+  useCallback,
+  useMemo,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent,
+  type ReactNode,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useFileExplorer, type FileTreeNode } from '../hooks'
@@ -19,6 +30,7 @@ import {
   MaximizeIcon,
   SearchIcon,
   CloseIcon,
+  UploadIcon,
 } from './Icons'
 import { CodePreview } from './CodePreview'
 import { HtmlFilePreviewFrame } from './HtmlFilePreviewFrame'
@@ -37,13 +49,35 @@ import {
   formatMimeType,
   type PreviewCategory,
 } from '../utils/mimeUtils'
-import { downloadFileContent } from '../utils/downloadUtils'
+import { saveData } from '../utils/downloadUtils'
+import { readFileBytes } from '../api/fileDownload'
+import { uploadProjectFile } from '../api/fileUpload'
+import { serverStore } from '../store/serverStore'
+import { invalidateDirectoryCache } from '../api/file'
+import { WordFilePreview } from './WordFilePreview'
 import { searchText, searchFiles } from '../api/file'
 import type { FileContent, TextSearchMatch } from '../api/types'
 import { startInternalDrag } from '../lib/internalDragCore'
 import { toAbsolutePath } from '../features/mention'
 import { getDesktopPlatform, isTauri, isTauriMobile } from '../utils/tauri'
 import type { TargetLineRange } from './codeMirrorReadonlyExtensions'
+import { isEditableFile, isOfficeFile } from '../utils/filePreview'
+import { hasDirtyFileDraft } from '../store/fileDraftStore'
+import { useWorkspaceRoot } from '../hooks/useWorkspaceRoot'
+import { isWithinWorkspace, isProjectFilePath } from '../utils/workspaceBoundary'
+import { addFileContextToChat } from '../utils/chatContext'
+import { FileContextBoundary } from './FileContextBoundary'
+import { TransferProgressBar } from './TransferProgressBar'
+import type { TransferProgress } from '../utils/transferProgress'
+
+const FileWorkspace = lazy(() => import('./FileWorkspace').then(module => ({ default: module.FileWorkspace })))
+const OnlyOfficeEditor = lazy(() => import('./OnlyOfficeEditor').then(module => ({ default: module.OnlyOfficeEditor })))
+const OfficeFilePreview = lazy(() =>
+  import('./OfficeFilePreview').then(module => ({ default: module.OfficeFilePreview })),
+)
+const OfficeDocumentPreview = lazy(() =>
+  import('./OfficeDocumentPreview').then(module => ({ default: module.OfficeDocumentPreview })),
+)
 
 function canRevealInSystemExplorer(): boolean {
   return isTauri() && !isTauriMobile()
@@ -72,6 +106,18 @@ const MIN_PREVIEW_HEIGHT = 150
 const MARKDOWN_MIME_TYPES = new Set(['text/markdown', 'text/x-markdown', 'text/md', 'application/markdown'])
 const HTML_MIME_TYPES = new Set(['text/html', 'application/xhtml+xml'])
 const textEncoder = new TextEncoder()
+
+function findDirectory(nodes: FileTreeNode[], path: string): boolean {
+  for (const node of nodes) {
+    if (node.path === path) return node.type === 'directory'
+    if (node.children && findDirectory(node.children, path)) return true
+  }
+  return false
+}
+
+function hasTreePath(nodes: FileTreeNode[], path: string): boolean {
+  return nodes.some(node => node.path === path || (node.children ? hasTreePath(node.children, path) : false))
+}
 
 function isMarkdownPreview(language: string, mimeType?: string): boolean {
   if (language === 'markdown' || language === 'mdx') return true
@@ -114,6 +160,10 @@ function getSearchMatchRanges(match: TextSearchMatch): TargetLineRange[] {
 }
 
 interface FileExplorerProps {
+  revealFile?: PreviewFile
+  revealRevision?: number
+  mode?: 'tree' | 'preview' | 'both'
+  onOpenFile?: () => void
   panelTabId: string
   directory?: string
   /** 数据所属服务器（右侧面板跟随焦点 session 时传入；缺省用活动服务器） */
@@ -126,16 +176,26 @@ interface FileExplorerProps {
 }
 
 export const FileExplorer = memo(function FileExplorer({
+  mode = 'both',
+  onOpenFile,
   panelTabId,
-  directory,
+  directory: requestedDirectory,
   serverId,
   previewFile,
   previewFiles,
   position = 'right',
   isPanelResizing = false,
   sessionId,
+  revealFile,
+  revealRevision,
 }: FileExplorerProps) {
   const { t } = useTranslation(['components', 'common'])
+  const workspaceRoot = useWorkspaceRoot(serverId)
+  const directory =
+    isWithinWorkspace(requestedDirectory, workspaceRoot) &&
+    (!previewFile || isProjectFilePath(previewFile.path, requestedDirectory!))
+      ? requestedDirectory
+      : undefined
   const containerRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
   const fileContextMenuRef = useRef<HTMLDivElement>(null)
@@ -144,10 +204,28 @@ export const FileExplorer = memo(function FileExplorer({
   const [searchResults, setSearchResults] = useState<TextSearchMatch[]>([])
   const [fileResults, setFileResults] = useState<string[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
-  const [fileContextMenu, setFileContextMenu] = useState<{ x: number; y: number; absolutePath: string } | null>(null)
+  const [fileContextMenu, setFileContextMenu] = useState<{
+    x: number
+    y: number
+    absolutePath: string
+    path: string
+    isDirectory: boolean
+  } | null>(null)
   const canRevealFiles = canRevealInSystemExplorer()
   const revealInSystemExplorerLabel = useMemo(() => getRevealInSystemExplorerLabel(t), [t])
   const [searchError, setSearchError] = useState<string | null>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
+  const uploadFolderRef = useRef('')
+  const [fileOperationError, setFileOperationError] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState('')
+  const [uploadTransfer, setUploadTransfer] = useState<TransferProgress | null>(null)
+  const [downloadTransfer, setDownloadTransfer] = useState<TransferProgress | null>(null)
+  const [downloadName, setDownloadName] = useState('')
+  const uploadingRef = useRef(false)
+  const [downloading, setDownloading] = useState(false)
+  const [addingContext, setAddingContext] = useState(false)
+  const addingContextRef = useRef(false)
   const {
     splitHeight: treeHeight,
     isResizing,
@@ -171,6 +249,7 @@ export const FileExplorer = memo(function FileExplorer({
     error,
     expandedPaths,
     toggleExpand,
+    expandPath,
     previewContent,
     previewLoading,
     previewError,
@@ -178,11 +257,52 @@ export const FileExplorer = memo(function FileExplorer({
     clearPreview,
     fileStatus,
     refresh,
-  } = useFileExplorer({ directory, autoLoad: true, sessionId: sessionId || undefined, serverId, consumerId: `file-explorer-${panelTabId}` })
+    softRefresh,
+  } = useFileExplorer({
+    directory,
+    projectRoot: workspaceRoot || null,
+    autoLoad: mode !== 'preview',
+    sessionId: sessionId || undefined,
+    serverId,
+    consumerId: `file-explorer-${panelTabId}`,
+  })
+  const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null)
+  const startedRevealRef = useRef<string | null>(null)
+  const handledRevealRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!revealFile || mode === 'preview' || !directory) return
+    const key = `${serverId}:${directory}:${revealFile.path}:${revealRevision}`
+    if (handledRevealRef.current === key) return
+    if (startedRevealRef.current !== key) {
+      startedRevealRef.current = key
+      invalidateDirectoryCache(directory, serverId)
+      void softRefresh()
+      setSearchQuery('')
+      setSelectedTreePath(revealFile.path)
+    }
+    const parts = revealFile.path.replace(/\\/g, '/').split('/')
+    const ancestorPaths = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'))
+    const nextAncestor = ancestorPaths.find(path => !expandedPaths.has(path) && hasTreePath(tree, path))
+    if (nextAncestor) {
+      expandPath(nextAncestor)
+      return
+    }
+    if (ancestorPaths.some(path => !expandedPaths.has(path))) return
+    handledRevealRef.current = key
+    setSearchQuery('')
+    setSelectedTreePath(revealFile.path)
+  }, [revealFile, revealRevision, directory, mode, expandPath, serverId, softRefresh, expandedPaths, tree])
+  useEffect(() => {
+    if (!selectedTreePath || mode === 'preview') return
+    const target = Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-file-path]') ?? []).find(
+      element => element.dataset.filePath === selectedTreePath,
+    )
+    target?.scrollIntoView({ block: 'nearest' })
+  }, [selectedTreePath, tree, expandedPaths, mode])
 
   // 当 previewFile 改变时加载预览
   useEffect(() => {
-    if (previewFile) {
+    if (previewFile && !isEditableFile(previewFile.path) && !isOfficeFile(previewFile.path)) {
       loadPreview(previewFile.path)
     } else {
       clearPreview()
@@ -190,22 +310,99 @@ export const FileExplorer = memo(function FileExplorer({
   }, [previewFile, loadPreview, clearPreview])
 
   const handleRefresh = useCallback(async () => {
+    invalidateDirectoryCache(directory, serverId)
     await refresh()
-    if (previewFile) {
+    if (previewFile && !isEditableFile(previewFile.path) && !isOfficeFile(previewFile.path)) {
       await loadPreview(previewFile.path)
     }
-  }, [loadPreview, previewFile, refresh])
+  }, [loadPreview, previewFile, refresh, directory, serverId])
+
+  const uploadFiles = useCallback(
+    async (files: File[], folder = '') => {
+      if (!directory || uploadingRef.current || files.length === 0) return
+      uploadingRef.current = true
+      const targetServer = serverId ?? serverStore.getActiveServerId()
+      setUploading(true)
+      setFileOperationError(null)
+      const total = files.reduce((sum, file) => sum + file.size, 0)
+      let completed = 0
+      let last: TransferProgress = { loaded: 0, total, phase: 'preparing' }
+      setUploadTransfer(last)
+      try {
+        for (const file of files) {
+          setUploadProgress(file.name)
+          await uploadProjectFile(file, folder, directory, targetServer, {
+            onProgress: progress => {
+              last = {
+                loaded: completed + progress.loaded,
+                total,
+                phase: progress.phase === 'completed' ? 'processing' : progress.phase,
+              }
+              setUploadTransfer(last)
+            },
+          })
+          completed += file.size
+        }
+        setUploadTransfer({ loaded: total, total, phase: 'completed' })
+      } catch (error) {
+        setUploadTransfer({ ...last, phase: 'failed' })
+        setFileOperationError(error instanceof Error ? error.message : t('fileExplorer.uploadFailed'))
+      } finally {
+        invalidateDirectoryCache(directory, targetServer)
+        await refresh()
+        setUploading(false)
+        uploadingRef.current = false
+      }
+    },
+    [directory, serverId, refresh, t],
+  )
+
+  const selectUpload = useCallback((folder = '') => {
+    uploadFolderRef.current = folder
+    uploadInputRef.current?.click()
+  }, [])
+
+  const downloadPath = useCallback(
+    async (path: string) => {
+      if (!directory || !isProjectFilePath(path, directory)) return
+      if (downloading) return
+      setDownloading(true)
+      setFileOperationError(null)
+      setDownloadName(path.split(/[\\/]/).pop() || 'file')
+      let last: TransferProgress = { loaded: 0, phase: 'preparing' }
+      setDownloadTransfer(last)
+      try {
+        const bytes = await readFileBytes(path, directory, serverId ?? serverStore.getActiveServerId(), {
+          onProgress: progress => {
+            last = progress
+            setDownloadTransfer(progress)
+          },
+        })
+        saveData(bytes, path.split(/[\\/]/).pop() || 'file')
+        setDownloadTransfer({ loaded: bytes.length, total: bytes.length, phase: 'completed' })
+      } catch (error) {
+        setDownloadTransfer({ ...last, phase: 'failed' })
+        setFileOperationError(error instanceof Error ? error.message : t('fileExplorer.downloadFailed'))
+      } finally {
+        setDownloading(false)
+      }
+    },
+    [directory, serverId, t, downloading],
+  )
 
   // 处理文件点击
   const handleFileClick = useCallback(
     (node: FileTreeNode) => {
+      if (!directory || !isProjectFilePath(node.path, directory)) return
       if (node.type === 'directory') {
         toggleExpand(node.path)
       } else {
-        layoutStore.openFilePreview({ path: node.path, name: node.name }, position)
+        setSelectedTreePath(node.path)
+        layoutStore.openFilePreview({ path: node.path, name: node.name, directory, serverId }, position)
+        onOpenFile?.()
       }
     },
-    [toggleExpand, position],
+    [toggleExpand, position, directory, serverId, onOpenFile],
   )
 
   const resolveAbsolutePath = useCallback(
@@ -219,14 +416,19 @@ export const FileExplorer = memo(function FileExplorer({
 
   const handleFileContextMenu = useCallback(
     (event: React.MouseEvent, path: string, absolute?: string) => {
-      if (!canRevealFiles) return
       const absolutePath = resolveAbsolutePath(path, absolute)
-      if (!absolutePath) return
+      if (!absolutePath || !directory || !isProjectFilePath(path, directory)) return
       event.preventDefault()
       event.stopPropagation()
-      setFileContextMenu({ x: event.clientX, y: event.clientY, absolutePath })
+      setFileContextMenu({
+        x: Math.min(event.clientX, window.innerWidth - 200),
+        y: Math.min(event.clientY, window.innerHeight - 160),
+        absolutePath,
+        path,
+        isDirectory: findDirectory(tree, path),
+      })
     },
-    [canRevealFiles, resolveAbsolutePath],
+    [resolveAbsolutePath, tree, directory],
   )
 
   const handleRevealInSystemExplorer = useCallback(() => {
@@ -313,7 +515,7 @@ export const FileExplorer = memo(function FileExplorer({
       searchFiles(trimmedSearchQuery, { directory, limit: 50, serverId })
         .then(paths => {
           if (requestId !== searchRequestIdRef.current) return
-          setFileResults(paths)
+          setFileResults(paths.filter(path => isProjectFilePath(path, directory)))
         })
         .catch(() => {
           // 文件名搜索失败不报错
@@ -327,7 +529,7 @@ export const FileExplorer = memo(function FileExplorer({
       searchText(trimmedSearchQuery, directory, serverId)
         .then(results => {
           if (requestId !== searchRequestIdRef.current) return
-          setSearchResults(results)
+          setSearchResults(results.filter(match => isProjectFilePath(match.path.text, directory)))
         })
         .catch(err => {
           if (requestId !== searchRequestIdRef.current) return
@@ -353,22 +555,26 @@ export const FileExplorer = memo(function FileExplorer({
         {
           path,
           name,
+          directory,
+          serverId,
           targetLine: match.line_number,
           targetKey: `${path}:${match.line_number}:${match.absolute_offset}:${Date.now()}`,
           targetRanges: getSearchMatchRanges(match),
         },
         position,
       )
+      onOpenFile?.()
     },
-    [position],
+    [position, directory, serverId, onOpenFile],
   )
 
   const handleFileResultClick = useCallback(
     (path: string) => {
       const name = path.split(/[/\\]/).pop() || path
-      layoutStore.openFilePreview({ path, name }, position)
+      layoutStore.openFilePreview({ path, name, directory, serverId }, position)
+      onOpenFile?.()
     },
-    [position],
+    [position, directory, serverId, onOpenFile],
   )
 
   const handleSearchQueryChange = useCallback((value: string) => {
@@ -395,107 +601,159 @@ export const FileExplorer = memo(function FileExplorer({
             e.currentTarget.style.visibility = 'hidden'
           }}
         />
-        <span className="text-center">{t('fileExplorer.selectProject')}</span>
+        <span className="text-center">
+          {t(requestedDirectory && workspaceRoot ? 'fileExplorer.outsideWorkspace' : 'fileExplorer.selectProject')}
+        </span>
       </div>
     )
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full">
+    <div ref={containerRef} className="flex flex-col h-full min-h-0">
+      <input
+        ref={uploadInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        disabled={uploading}
+        onChange={event => {
+          const files = Array.from(event.target.files || [])
+          event.target.value = ''
+          void uploadFiles(files, uploadFolderRef.current)
+        }}
+      />
+      <TransferProgressBar progress={uploadTransfer} label={t('fileExplorer.uploading', { name: uploadProgress })} />
+      <TransferProgressBar progress={downloadTransfer} label={`${t('common:download')} ${downloadName}`} />
+      {addingContext && (
+        <div role="status" className="px-3 py-1 text-[length:var(--fs-xs)] text-text-400">
+          {t('fileExplorer.addingContext')}
+        </div>
+      )}
+      {fileOperationError && (
+        <div role="alert" className="px-3 py-1 text-[length:var(--fs-xs)] text-danger-100 break-words">
+          {fileOperationError}
+        </div>
+      )}
       {/* File Tree - 使用 CSS 变量控制高度 */}
-      <div
-        ref={treeRef}
-        className="overflow-hidden flex flex-col shrink-0"
-        style={
-          {
-            '--tree-height': treeHeight !== null ? `${treeHeight}px` : '40%',
-            height: showPreview ? 'var(--tree-height)' : '100%',
-            minHeight: showPreview ? MIN_TREE_HEIGHT : undefined,
-          } as React.CSSProperties
-        }
-      >
-        {/* Tree Header */}
-        <div className="relative flex h-10 items-center gap-2 px-3 shrink-0">
-          <div className="relative group min-w-0 flex-1">
-            <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-400 w-3.5 h-3.5 group-focus-within:text-accent-main-100 transition-colors" />
-            <input
-              type="text"
-              name="file-explorer-text-search"
-              value={searchQuery}
-              onChange={e => handleSearchQueryChange(e.target.value)}
-              placeholder={t('fileExplorer.searchFiles')}
-              aria-label={t('fileExplorer.searchFiles')}
-              autoComplete="off"
-              className="w-full bg-bg-200/40 hover:bg-bg-200/60 focus:bg-bg-000 border border-transparent focus:border-border-200 rounded-lg py-1 pl-[30px] pr-7 text-[length:var(--fs-xs)] text-text-100 placeholder:text-text-400/70 focus-visible:ring-1 focus-visible:ring-border-200 focus-visible:ring-inset transition-all"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => handleSearchQueryChange('')}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex h-5 w-5 items-center justify-center text-text-400 hover:text-text-100 rounded transition-colors"
-                aria-label={t('fileExplorer.clearSearch')}
-                title={t('fileExplorer.clearSearch')}
-              >
-                <CloseIcon size={12} />
-              </button>
+      {mode !== 'preview' && (
+        <div
+          ref={treeRef}
+          className="overflow-hidden flex flex-col shrink-0"
+          style={
+            {
+              '--tree-height': treeHeight !== null ? `${treeHeight}px` : '40%',
+              height: mode !== 'tree' && showPreview ? 'var(--tree-height)' : '100%',
+              minHeight: mode !== 'tree' && showPreview ? MIN_TREE_HEIGHT : undefined,
+              flex: mode === 'tree' ? 1 : undefined,
+            } as React.CSSProperties
+          }
+        >
+          {/* Tree Header */}
+          <div className="px-3 pt-2 text-[length:var(--fs-xxs)] font-mono text-text-400 truncate" title={directory}>
+            {directory}
+          </div>
+          <div className="relative flex h-10 items-center gap-2 px-3 shrink-0">
+            <div className="relative group min-w-0 flex-1">
+              <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-400 w-3.5 h-3.5 group-focus-within:text-accent-main-100 transition-colors" />
+              <input
+                type="text"
+                name="file-explorer-text-search"
+                value={searchQuery}
+                onChange={e => handleSearchQueryChange(e.target.value)}
+                placeholder={t('fileExplorer.searchFiles')}
+                aria-label={t('fileExplorer.searchFiles')}
+                autoComplete="off"
+                className="w-full bg-bg-200/40 hover:bg-bg-200/60 focus:bg-bg-000 border border-transparent focus:border-border-200 rounded-lg py-1 pl-[30px] pr-7 text-[length:var(--fs-xs)] text-text-100 placeholder:text-text-400/70 focus-visible:ring-1 focus-visible:ring-border-200 focus-visible:ring-inset transition-all"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => handleSearchQueryChange('')}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex h-5 w-5 items-center justify-center text-text-400 hover:text-text-100 rounded transition-colors"
+                  aria-label={t('fileExplorer.clearSearch')}
+                  title={t('fileExplorer.clearSearch')}
+                >
+                  <CloseIcon size={12} />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => selectUpload()}
+              disabled={uploading}
+              aria-label={t('fileExplorer.upload')}
+              title={t('fileExplorer.upload')}
+              className="p-1 text-text-400 hover:text-text-100 disabled:opacity-50"
+            >
+              <UploadIcon size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={isLoading}
+              aria-label={t('common:refresh')}
+              className="inline-flex h-6 w-6 items-center justify-center text-text-400 hover:text-text-100 hover:bg-bg-200/50 rounded-md transition-colors disabled:opacity-50"
+              title={t('common:refresh')}
+            >
+              <RetryIcon size={12} className={isLoading ? 'animate-spin' : ''} />
+            </button>
+            <div className="pointer-events-none absolute inset-x-3 bottom-0 h-px bg-border-200/30" />
+          </div>
+
+          {/* Tree Content */}
+          <div
+            className="flex-1 overflow-auto panel-scrollbar-y"
+            onDragOver={event => {
+              event.preventDefault()
+            }}
+            onDrop={event => {
+              event.preventDefault()
+              if (event.dataTransfer.files.length) void uploadFiles(Array.from(event.dataTransfer.files))
+            }}
+          >
+            {isSearchingText ? (
+              <TextSearchResults
+                results={searchResults}
+                fileResults={fileResults}
+                isLoading={searchLoading}
+                error={searchError}
+                onSelect={handleSearchResultClick}
+                onSelectFile={handleFileResultClick}
+                onContextMenuFile={handleFileContextMenu}
+                directory={directory}
+              />
+            ) : isLoading && tree.length === 0 ? (
+              <div className="flex items-center justify-center h-20 text-text-400 text-[length:var(--fs-sm)]">
+                {t('common:loading')}
+              </div>
+            ) : error ? (
+              <div className="flex flex-col items-center justify-center h-20 text-danger-100 text-[length:var(--fs-sm)] gap-1 px-4">
+                <AlertCircleIcon size={16} />
+                <span className="text-center">{error}</span>
+              </div>
+            ) : tree.length === 0 ? (
+              <div className="flex items-center justify-center h-20 text-text-400 text-[length:var(--fs-sm)]">
+                {t('fileExplorer.noFilesFound')}
+              </div>
+            ) : (
+              <div className="py-1">
+                {tree.map(node => (
+                  <FileTreeItem
+                    key={node.path}
+                    node={node}
+                    depth={0}
+                    expandedPaths={expandedPaths}
+                    fileStatus={fileStatus}
+                    onClick={handleFileClick}
+                    onContextMenu={handleFileContextMenu}
+                    selectedPath={selectedTreePath}
+                  />
+                ))}
+              </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={isLoading}
-            aria-label={t('common:refresh')}
-            className="inline-flex h-6 w-6 items-center justify-center text-text-400 hover:text-text-100 hover:bg-bg-200/50 rounded-md transition-colors disabled:opacity-50"
-            title={t('common:refresh')}
-          >
-            <RetryIcon size={12} className={isLoading ? 'animate-spin' : ''} />
-          </button>
-          <div className="pointer-events-none absolute inset-x-3 bottom-0 h-px bg-border-200/30" />
         </div>
-
-        {/* Tree Content */}
-        <div className="flex-1 overflow-auto panel-scrollbar-y">
-          {isSearchingText ? (
-            <TextSearchResults
-              results={searchResults}
-              fileResults={fileResults}
-              isLoading={searchLoading}
-              error={searchError}
-              onSelect={handleSearchResultClick}
-              onSelectFile={handleFileResultClick}
-              onContextMenuFile={canRevealFiles ? handleFileContextMenu : undefined}
-              directory={directory}
-            />
-          ) : isLoading && tree.length === 0 ? (
-            <div className="flex items-center justify-center h-20 text-text-400 text-[length:var(--fs-sm)]">
-              {t('common:loading')}
-            </div>
-          ) : error ? (
-            <div className="flex flex-col items-center justify-center h-20 text-danger-100 text-[length:var(--fs-sm)] gap-1 px-4">
-              <AlertCircleIcon size={16} />
-              <span className="text-center">{error}</span>
-            </div>
-          ) : tree.length === 0 ? (
-            <div className="flex items-center justify-center h-20 text-text-400 text-[length:var(--fs-sm)]">
-              {t('fileExplorer.noFilesFound')}
-            </div>
-          ) : (
-            <div className="py-1">
-              {tree.map(node => (
-                <FileTreeItem
-                  key={node.path}
-                  node={node}
-                  depth={0}
-                  expandedPaths={expandedPaths}
-                  fileStatus={fileStatus}
-                  onClick={handleFileClick}
-                  onContextMenu={canRevealFiles ? handleFileContextMenu : undefined}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       {fileContextMenu &&
         createPortal(
@@ -504,19 +762,106 @@ export const FileExplorer = memo(function FileExplorer({
             className="fixed z-[9999] bg-bg-100 border border-border-200 rounded-lg shadow-lg p-1 min-w-[160px]"
             style={{ left: fileContextMenu.x, top: fileContextMenu.y }}
           >
-            <button
-              type="button"
-              onClick={handleRevealInSystemExplorer}
-              className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] text-text-200 hover:bg-bg-200/60 hover:text-text-100 rounded-md transition-colors"
-            >
-              {revealInSystemExplorerLabel}
-            </button>
+            {!fileContextMenu.isDirectory && (
+              <>
+                <button
+                  type="button"
+                  disabled={addingContext}
+                  className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] hover:bg-bg-200/60 rounded-md disabled:opacity-50"
+                  onClick={() => {
+                    if (addingContextRef.current) return
+                    addingContextRef.current = true
+                    setAddingContext(true)
+                    const source = {
+                      path: fileContextMenu.path,
+                      directory,
+                      serverId: serverId ?? serverStore.getActiveServerId(),
+                    }
+                    setFileContextMenu(null)
+                    setFileOperationError(null)
+                    void addFileContextToChat(source)
+                      .then(added => {
+                        if (!added) setFileOperationError(t('fileExplorer.chatContextFailed'))
+                      })
+                      .catch(() => setFileOperationError(t('fileExplorer.chatContextFailed')))
+                      .finally(() => {
+                        addingContextRef.current = false
+                        setAddingContext(false)
+                      })
+                  }}
+                >
+                  {t('fileExplorer.addFileToChat')}
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] hover:bg-bg-200/60 rounded-md"
+                  onClick={() => {
+                    layoutStore.openFilePreview(
+                      {
+                        path: fileContextMenu.path,
+                        name: fileContextMenu.path.split(/[\\/]/).pop() || 'file',
+                        directory,
+                        serverId,
+                      },
+                      'right',
+                    )
+                    setFileContextMenu(null)
+                    onOpenFile?.()
+                  }}
+                >
+                  {t('fileExplorer.open')}
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] hover:bg-bg-200/60 rounded-md"
+                  onClick={() => {
+                    void downloadPath(fileContextMenu.path)
+                    setFileContextMenu(null)
+                  }}
+                >
+                  {t('common:download')}
+                </button>
+              </>
+            )}
+            {fileContextMenu.isDirectory && (
+              <>
+                <button
+                  type="button"
+                  className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] hover:bg-bg-200/60 rounded-md"
+                  onClick={() => {
+                    toggleExpand(fileContextMenu.path)
+                    setFileContextMenu(null)
+                  }}
+                >
+                  {t('fileExplorer.expandFolder')}
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] hover:bg-bg-200/60 rounded-md"
+                  onClick={() => {
+                    selectUpload(fileContextMenu.path)
+                    setFileContextMenu(null)
+                  }}
+                >
+                  {t('fileExplorer.uploadHere')}
+                </button>
+              </>
+            )}
+            {canRevealFiles && (
+              <button
+                type="button"
+                onClick={handleRevealInSystemExplorer}
+                className="w-full px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] text-text-200 hover:bg-bg-200/60 hover:text-text-100 rounded-md transition-colors"
+              >
+                {revealInSystemExplorerLabel}
+              </button>
+            )}
           </div>,
           document.body,
         )}
 
       {/* Resize Handle - 与标签栏同色 */}
-      {showPreview && (
+      {mode === 'both' && showPreview && (
         <div
           className={`
             h-1.5 cursor-row-resize shrink-0 relative
@@ -529,9 +874,10 @@ export const FileExplorer = memo(function FileExplorer({
       )}
 
       {/* Preview Area */}
-      {showPreview && (
+      {mode !== 'tree' && (showPreview || mode === 'preview') && (
         <div className="flex-1 flex flex-col min-h-0" style={{ minHeight: MIN_PREVIEW_HEIGHT }}>
           <FilePreview
+            key={`${serverId ?? ''}:${directory ?? ''}:${previewFile?.path ?? ''}`}
             previewFiles={previewFiles}
             path={previewFile?.path ?? null}
             targetLine={previewFile?.targetLine}
@@ -546,6 +892,10 @@ export const FileExplorer = memo(function FileExplorer({
             onReorderPreview={handleReorderPreviewTabs}
             isResizing={isAnyResizing}
             directory={directory}
+            serverId={serverId}
+            onLoadPreview={() => {
+              if (previewFile) void loadPreview(previewFile.path, true)
+            }}
           />
         </div>
       )}
@@ -598,7 +948,11 @@ const TextSearchResults = memo(function TextSearchResults({
   )
 
   if (isLoading && !hasFiles && !hasText) {
-    return <div className="flex items-center justify-center h-20 text-text-400 text-[length:var(--fs-sm)]">{t('common:loading')}</div>
+    return (
+      <div className="flex items-center justify-center h-20 text-text-400 text-[length:var(--fs-sm)]">
+        {t('common:loading')}
+      </div>
+    )
   }
 
   if (error && !hasFiles && !hasText) {
@@ -696,7 +1050,9 @@ const TextSearchResults = memo(function TextSearchResults({
                   <span className="truncate text-[length:var(--fs-sm)] text-text-200">{name}</span>
                   <span className="shrink-0 text-[length:var(--fs-xxs)] text-text-500">:{match.line_number}</span>
                 </div>
-                <div className="mt-0.5 truncate pl-[22px] font-mono text-[length:var(--fs-xxs)] text-text-400">{line}</div>
+                <div className="mt-0.5 truncate pl-[22px] font-mono text-[length:var(--fs-xxs)] text-text-400">
+                  {line}
+                </div>
                 <div className="mt-0.5 truncate pl-[22px] text-[length:var(--fs-xxs)] text-text-500">{path}</div>
               </button>
             )
@@ -715,6 +1071,7 @@ const TextSearchResults = memo(function TextSearchResults({
 // ============================================
 
 interface FileTreeItemProps {
+  selectedPath?: string | null
   node: FileTreeNode
   depth: number
   expandedPaths: Set<string>
@@ -730,6 +1087,7 @@ const FileTreeItem = memo(function FileTreeItem({
   fileStatus,
   onClick,
   onContextMenu,
+  selectedPath,
 }: FileTreeItemProps) {
   const isExpanded = expandedPaths.has(node.path)
   const isDirectory = node.type === 'directory'
@@ -769,6 +1127,8 @@ const FileTreeItem = memo(function FileTreeItem({
     <div>
       <button
         type="button"
+        data-file-path={node.path}
+        aria-current={!isDirectory && selectedPath === node.path ? 'true' : undefined}
         onPointerDown={handlePointerDragStart}
         onClick={() => onClick(node)}
         onContextMenu={event => onContextMenu?.(event, node.path, node.absolute)}
@@ -776,7 +1136,7 @@ const FileTreeItem = memo(function FileTreeItem({
           w-full flex items-center gap-1 px-2 py-0.5 text-left cursor-default
           select-none hover:bg-bg-200/50 transition-colors text-[length:var(--fs-sm)]
           text-text-300
-          ${node.ignored ? 'opacity-50' : ''}
+          ${node.ignored ? 'opacity-50' : ''} ${selectedPath === node.path ? 'bg-accent-main-100/10 ring-1 ring-inset ring-accent-main-100/30' : ''}
         `}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
@@ -824,6 +1184,7 @@ const FileTreeItem = memo(function FileTreeItem({
               expandedPaths={expandedPaths}
               fileStatus={fileStatus}
               onClick={onClick}
+              selectedPath={selectedPath}
               onContextMenu={onContextMenu}
             />
           ))}
@@ -838,6 +1199,8 @@ const FileTreeItem = memo(function FileTreeItem({
 // ============================================
 
 interface FilePreviewProps {
+  onLoadPreview: () => void
+  serverId?: string
   previewFiles: PreviewFile[]
   path: string | null
   targetLine?: number
@@ -869,6 +1232,8 @@ function FilePreview({
   onReorderPreview,
   isResizing = false,
   directory,
+  serverId,
+  onLoadPreview,
 }: FilePreviewProps) {
   const { t } = useTranslation(['components', 'common'])
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -876,29 +1241,69 @@ function FilePreview({
   // 获取文件名
   const fileName = path?.split(/[/\\]/).pop() || 'Untitled'
   const language = path ? detectLanguage(path) : 'text'
+  const [downloadError, setDownloadError] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const downloadingRef = useRef(false)
+  const [transferProgress, setTransferProgress] = useState<TransferProgress | null>(null)
+  const [draftRevision, setDraftRevision] = useState(0)
+  const onDirtyChange = useCallback(() => setDraftRevision(value => value + 1), [])
+  const editable = !!path && !!directory && isEditableFile(path)
+  const office = !!path && !!directory && isOfficeFile(path)
+  const [officeEditing, setOfficeEditing] = useState(false)
 
   // 下载当前文件
   const handleDownload = useCallback(() => {
-    if (content) {
-      downloadFileContent(content, fileName)
-    }
-  }, [content, fileName])
+    if (!path || downloadingRef.current) return
+    downloadingRef.current = true
+    setDownloading(true)
+    setDownloadError(false)
+    let last: TransferProgress = { loaded: 0, phase: 'preparing' }
+    setTransferProgress(last)
+    void readFileBytes(path, directory, serverId ?? serverStore.getActiveServerId(), {
+      onProgress: progress => {
+        last = progress
+        setTransferProgress(progress)
+      },
+    })
+      .then(bytes => {
+        saveData(bytes, fileName, content?.mimeType)
+        setTransferProgress({ loaded: bytes.length, total: bytes.length, phase: 'completed' })
+      })
+      .catch(() => {
+        setDownloadError(true)
+        setTransferProgress({ ...last, phase: 'failed' })
+      })
+      .finally(() => {
+        downloadingRef.current = false
+        setDownloading(false)
+      })
+  }, [content?.mimeType, fileName, path, directory, serverId])
 
-  const previewTabItems = useMemo<PreviewTabsBarItem[]>(
-    () =>
-      previewFiles.map(file => ({
-        id: file.path,
-        title: file.path,
-        closeTitle: `${t('common:close')} ${file.name}`,
-        iconPath: file.path,
-        label: <span className="block whitespace-nowrap text-[length:var(--fs-xs)] font-mono">{file.name}</span>,
-      })),
-    [previewFiles, t],
-  )
+  const previewTabItems = useMemo<PreviewTabsBarItem[]>(() => {
+    void draftRevision
+    return previewFiles.map(file => ({
+      id: file.path,
+      title: file.path,
+      closeTitle: `${t('common:close')} ${file.name}`,
+      iconPath: file.path,
+      label: (
+        <span className="block whitespace-nowrap text-[length:var(--fs-xs)] font-mono">
+          {file.name}
+          {hasDirtyFileDraft(file.path, directory, serverId) ? ' ●' : ''}
+        </span>
+      ),
+    }))
+  }, [previewFiles, t, directory, serverId, draftRevision])
 
   // 处理内容类型分发
   const displayContent = useMemo(() => {
     if (!content) return null
+
+    if (/\.docx$/i.test(path || '')) return { type: 'word' as const, base64: content.content }
+    if (/\.(?:xlsx|pptx)$/i.test(path || '')) return { type: 'officePreview' as const, base64: content.content }
+    if (/\.(?:doc|xls|ppt)$/i.test(path || '')) return { type: 'legacyWord' as const }
+    if (isOfficeFile(path || ''))
+      return { type: 'binary' as const, mimeType: content.mimeType || 'application/octet-stream' }
 
     const category = getPreviewCategory(content.mimeType)
 
@@ -945,7 +1350,7 @@ function FilePreview({
     }
 
     // 二进制 + 不可预览
-    if (isBinaryContent(content.encoding)) {
+    if (content.type === 'binary' || isBinaryContent(content.encoding)) {
       return {
         type: 'binary' as const,
         mimeType: content.mimeType || 'application/octet-stream',
@@ -965,12 +1370,22 @@ function FilePreview({
       type: 'text' as const,
       text: content.content,
     }
-  }, [content, language])
+  }, [content, language, path])
 
   // 全屏内容
   const fullscreenContent = useMemo((): ReactNode => {
     if (!displayContent) return null
     switch (displayContent.type) {
+      case 'officePreview':
+        return (
+          <Suspense fallback={null}>
+            <OfficeFilePreview key={path} path={path!} base64={displayContent.base64} />
+          </Suspense>
+        )
+      case 'word':
+        return <WordFilePreview key={path} base64={displayContent.base64} />
+      case 'legacyWord':
+        return <div className="p-4 text-text-400">{t('fileExplorer.legacyWord')}</div>
       case 'media':
         return (
           <MediaPreview
@@ -1015,6 +1430,7 @@ function FilePreview({
             fileName={fileName}
             filePath={path ?? fileName}
             directory={directory}
+            serverId={serverId}
             isResizing={false}
             targetLine={targetLine}
             targetKey={targetKey}
@@ -1034,20 +1450,40 @@ function FilePreview({
       default:
         return null
     }
-  }, [directory, displayContent, fileName, handleDownload, language, path, targetKey, targetLine, targetRanges])
+  }, [
+    directory,
+    displayContent,
+    fileName,
+    handleDownload,
+    language,
+    path,
+    targetKey,
+    targetLine,
+    targetRanges,
+    t,
+    serverId,
+  ])
 
   const fullscreenHeaderRight = useMemo(
     () =>
       content ? (
-        <button
-          onClick={handleDownload}
-          className="p-1.5 text-text-400 hover:text-text-100 hover:bg-bg-200/60 rounded-lg transition-colors"
-          title={`${t('common:save')} ${fileName}`}
-        >
-          <DownloadIcon size={14} />
-        </button>
+        <div className="flex items-center min-w-0">
+          {transferProgress && (
+            <div className="w-56 max-w-[45vw]">
+              <TransferProgressBar progress={transferProgress} label={`${t('common:download')} ${fileName}`} />
+            </div>
+          )}
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            className="p-1.5 text-text-400 hover:text-text-100 hover:bg-bg-200/60 rounded-lg transition-colors"
+            title={`${t('common:save')} ${fileName}`}
+          >
+            <DownloadIcon size={14} />
+          </button>
+        </div>
       ) : null,
-    [content, fileName, handleDownload, t],
+    [content, fileName, handleDownload, t, transferProgress, downloading],
   )
 
   const fullscreenLayer = useMemo(
@@ -1057,11 +1493,20 @@ function FilePreview({
             id: `file-preview:${path || fileName}`,
             title: fileName,
             headerRight: fullscreenHeaderRight,
-            content: fullscreenContent,
+            content:
+              directory && path ? (
+                <FileContextBoundary
+                  source={{ path, directory, serverId: serverId ?? serverStore.getActiveServerId() }}
+                >
+                  {fullscreenContent}
+                </FileContextBoundary>
+              ) : (
+                fullscreenContent
+              ),
             deferContent: displayContent?.type === 'html',
           }
         : null,
-    [displayContent?.type, fileName, fullscreenContent, fullscreenHeaderRight, path],
+    [displayContent?.type, fileName, fullscreenContent, fullscreenHeaderRight, path, directory, serverId],
   )
   const { isOpen: isFullscreenOpen, open: openFullscreen } = useFullscreenLayer(fullscreenLayer)
 
@@ -1077,99 +1522,202 @@ function FilePreview({
         onReorder={onReorderPreview}
         tabWidthClassName="w-auto max-w-none min-w-max"
         rightActions={
-          content ? (
+          path ? (
             <>
+              {!editable && !office && (
+                <button
+                  onClick={openFullscreen}
+                  className="p-1 text-text-400 hover:text-text-100 hover:bg-bg-300/50 rounded transition-colors"
+                  title={t('contentBlock.fullscreen')}
+                >
+                  <MaximizeIcon size={12} />
+                </button>
+              )}
               <button
-                onClick={openFullscreen}
-                className="p-1 text-text-400 hover:text-text-100 hover:bg-bg-300/50 rounded transition-colors"
-                title={t('contentBlock.fullscreen')}
-              >
-                <MaximizeIcon size={12} />
-              </button>
-              <button
+                type="button"
                 onClick={handleDownload}
-                className="p-1 text-text-400 hover:text-text-100 hover:bg-bg-300/50 rounded transition-colors"
-                title={`${t('common:save')} ${fileName}`}
+                disabled={downloading}
+                aria-label={`${t('common:download')} ${fileName}`}
+                className="flex items-center gap-1 px-2 py-1 text-text-400 hover:text-text-100 hover:bg-bg-300/50 rounded transition-colors disabled:opacity-50"
+                title={`${t('common:download')} ${fileName}`}
               >
                 <DownloadIcon size={12} />
+                <span className="text-[length:var(--fs-xs)]">{t('common:download')}</span>
               </button>
+              {office && !officeEditing && (
+                <button
+                  type="button"
+                  onClick={() => setOfficeEditing(true)}
+                  className="px-2 py-1 rounded hover:bg-bg-300/50 text-[length:var(--fs-xs)]"
+                >
+                  {t('fileExplorer.edit')}
+                </button>
+              )}
+              {!editable && !officeEditing && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftRevision(value => value + 1)
+                    if (!office) onLoadPreview()
+                  }}
+                  className="px-2 py-1 rounded hover:bg-bg-300/50 text-[length:var(--fs-xs)]"
+                >
+                  {t('fileExplorer.reloadFile')}
+                </button>
+              )}
             </>
           ) : null
         }
       />
+      {path && (
+        <div
+          className="px-3 py-1 text-[length:var(--fs-xxs)] text-text-400 font-mono truncate border-b border-border-200/40"
+          title={`${directory ?? ''}/${path}`}
+        >
+          {directory} / {path}
+        </div>
+      )}
+      {downloadError && (
+        <div role="alert" className="px-3 py-1 text-danger-100">
+          {t('fileExplorer.downloadFailed')}
+        </div>
+      )}
+      <TransferProgressBar progress={transferProgress} label={`${t('common:download')} ${fileName}`} />
 
       {/* Preview Content */}
-      <div ref={scrollRef} className="flex-1 overflow-auto panel-scrollbar">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
-            {t('common:loading')}
-          </div>
-        ) : error ? (
-          <div className="flex flex-col items-center justify-center h-full text-danger-100 text-[length:var(--fs-sm)] gap-1 px-4">
-            <AlertCircleIcon size={16} />
-            <span className="text-center">{error}</span>
-          </div>
-        ) : displayContent?.type === 'media' ? (
-          <MediaPreview
-            category={displayContent.category}
-            dataUrl={displayContent.dataUrl}
-            mimeType={displayContent.mimeType}
-            fileName={fileName}
-          />
-        ) : displayContent?.type === 'binary' ? (
-          <BinaryPlaceholder mimeType={displayContent.mimeType} fileName={fileName} onDownload={handleDownload} />
-        ) : displayContent?.type === 'textMedia' ? (
-          <TextMediaPreview
-            key={targetKey ?? path ?? fileName}
-            dataUrl={displayContent.dataUrl}
-            text={displayContent.text}
-            language={language || 'xml'}
-            fileName={fileName}
-            isResizing={isResizing}
-            targetLine={targetLine}
-            targetKey={targetKey}
-            targetRanges={targetRanges}
-          />
-        ) : displayContent?.type === 'markdown' ? (
-          <MarkdownFilePreview
-            key={targetKey ?? path ?? fileName}
-            text={displayContent.text}
-            isResizing={isResizing}
-            targetLine={targetLine}
-            targetKey={targetKey}
-            targetRanges={targetRanges}
-          />
-        ) : displayContent?.type === 'html' ? (
-          isFullscreenOpen ? null : (
-            <HtmlFilePreview
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto panel-scrollbar">
+        <FileContextBoundary
+          source={{
+            path: path || fileName,
+            directory: directory || '',
+            serverId: serverId ?? serverStore.getActiveServerId(),
+          }}
+        >
+          {office && officeEditing ? (
+            <Suspense fallback={<div className="p-3 text-text-400">{t('common:loading')}</div>}>
+              <OnlyOfficeEditor
+                key={`${serverId}:${directory}:${path}`}
+                path={path!}
+                directory={directory!}
+                serverId={serverId ?? serverStore.getActiveServerId()}
+                mode="edit"
+                onPreview={() => {
+                  setOfficeEditing(false)
+                  setDraftRevision(value => value + 1)
+                }}
+              />
+            </Suspense>
+          ) : editable ? (
+            <Suspense fallback={<div className="p-3 text-text-400">{t('common:loading')}</div>}>
+              <FileWorkspace
+                key={`${serverId}:${directory}:${path}`}
+                path={path!}
+                directory={directory!}
+                serverId={serverId ?? serverStore.getActiveServerId()}
+                onDirtyChange={onDirtyChange}
+              />
+            </Suspense>
+          ) : office ? (
+            <Suspense fallback={<div className="p-3 text-text-400">{t('common:loading')}</div>}>
+              <OfficeDocumentPreview
+                key={`${path}:${draftRevision}`}
+                path={path!}
+                directory={directory!}
+                serverId={serverId ?? serverStore.getActiveServerId()}
+              />
+            </Suspense>
+          ) : isLoading ? (
+            <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
+              {t('common:loading')}
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center h-full text-danger-100 text-[length:var(--fs-sm)] gap-1 px-4">
+              <AlertCircleIcon size={16} />
+              <span className="text-center">{error}</span>
+            </div>
+          ) : office && !/\.docx$/i.test(path || '') ? (
+            <Suspense fallback={<div className="p-3 text-text-400">{t('common:loading')}</div>}>
+              <OfficeDocumentPreview
+                key={path}
+                path={path!}
+                directory={directory!}
+                serverId={serverId ?? serverStore.getActiveServerId()}
+                base64={content?.content}
+              />
+            </Suspense>
+          ) : displayContent?.type === 'officePreview' ? (
+            <Suspense fallback={<div className="p-3 text-text-400">{t('common:loading')}</div>}>
+              <OfficeFilePreview key={path} path={path!} base64={displayContent.base64} />
+            </Suspense>
+          ) : displayContent?.type === 'word' ? (
+            <WordFilePreview key={path} base64={displayContent.base64} />
+          ) : displayContent?.type === 'legacyWord' ? (
+            <div className="p-4 text-text-400">{t('fileExplorer.legacyWord')}</div>
+          ) : displayContent?.type === 'media' ? (
+            isFullscreenOpen ? null : (
+              <MediaPreview
+                category={displayContent.category}
+                dataUrl={displayContent.dataUrl}
+                mimeType={displayContent.mimeType}
+                fileName={fileName}
+              />
+            )
+          ) : displayContent?.type === 'binary' ? (
+            <BinaryPlaceholder mimeType={displayContent.mimeType} fileName={fileName} onDownload={handleDownload} />
+          ) : displayContent?.type === 'textMedia' ? (
+            <TextMediaPreview
               key={targetKey ?? path ?? fileName}
+              dataUrl={displayContent.dataUrl}
               text={displayContent.text}
+              language={language || 'xml'}
               fileName={fileName}
-              filePath={path ?? fileName}
-              directory={directory}
               isResizing={isResizing}
               targetLine={targetLine}
               targetKey={targetKey}
               targetRanges={targetRanges}
             />
-          )
-        ) : // diff 渲染已移至 Changes 面板
-        // ) : displayContent?.type === 'diff' ? (
-        //   <DiffPreview hunks={displayContent.hunks} isResizing={isResizing} />
-        displayContent?.type === 'text' ? (
-          <CodePreview
-            code={displayContent.text}
-            language={language || 'text'}
-            isResizing={isResizing}
-            targetLine={targetLine}
-            targetKey={targetKey}
-            targetRanges={targetRanges}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
-            {t('common:noContent')}
-          </div>
-        )}
+          ) : displayContent?.type === 'markdown' ? (
+            <MarkdownFilePreview
+              key={targetKey ?? path ?? fileName}
+              text={displayContent.text}
+              isResizing={isResizing}
+              targetLine={targetLine}
+              targetKey={targetKey}
+              targetRanges={targetRanges}
+            />
+          ) : displayContent?.type === 'html' ? (
+            isFullscreenOpen ? null : (
+              <HtmlFilePreview
+                key={targetKey ?? path ?? fileName}
+                text={displayContent.text}
+                fileName={fileName}
+                filePath={path ?? fileName}
+                directory={directory}
+                serverId={serverId}
+                isResizing={isResizing}
+                targetLine={targetLine}
+                targetKey={targetKey}
+                targetRanges={targetRanges}
+              />
+            )
+          ) : // diff 渲染已移至 Changes 面板
+          // ) : displayContent?.type === 'diff' ? (
+          //   <DiffPreview hunks={displayContent.hunks} isResizing={isResizing} />
+          displayContent?.type === 'text' ? (
+            <CodePreview
+              code={displayContent.text}
+              language={language || 'text'}
+              isResizing={isResizing}
+              targetLine={targetLine}
+              targetKey={targetKey}
+              targetRanges={targetRanges}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
+              {t('fileExplorer.openHint')}
+            </div>
+          )}
+        </FileContextBoundary>
       </div>
     </div>
   )
@@ -1187,24 +1735,42 @@ interface MediaPreviewProps {
 }
 
 function MediaPreview({ category, dataUrl, mimeType, fileName }: MediaPreviewProps) {
+  const [source, setSource] = useState('')
+  useEffect(() => {
+    let disposed = false
+    let objectUrl = ''
+    void fetch(dataUrl)
+      .then(response => response.blob())
+      .then(blob => {
+        if (disposed) return
+        objectUrl = URL.createObjectURL(blob)
+        setSource(objectUrl)
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [dataUrl])
+  if (!source) return null
   switch (category) {
     case 'image':
-      return <ImagePreview dataUrl={dataUrl} fileName={fileName} />
+      return <ImagePreview key={source} dataUrl={source} fileName={fileName} />
     case 'audio':
       return (
         <div className="flex flex-col items-center justify-center h-full gap-3 p-4">
           <div className="text-text-400 text-[length:var(--fs-sm)]">{formatMimeType(mimeType)}</div>
-          <audio controls src={dataUrl} className="w-full max-w-xs" />
+          <audio controls src={source} className="w-full max-w-xs" />
         </div>
       )
     case 'video':
       return (
         <div className="flex items-center justify-center h-full p-4">
-          <video controls src={dataUrl} className="max-w-full max-h-full rounded" />
+          <video controls src={source} className="max-w-full max-h-full rounded" />
         </div>
       )
     case 'pdf':
-      return <iframe src={dataUrl} title={fileName} className="w-full h-full border-0" />
+      return <iframe src={source} title={fileName} className="w-full h-full min-h-80 border-0" />
   }
 }
 
@@ -1231,6 +1797,7 @@ function ImagePreview({ dataUrl, fileName }: ImagePreviewProps) {
   const [fitScale, setFitScale] = useState(1)
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
   const [initialized, setInitialized] = useState(false)
+  const [imageError, setImageError] = useState(false)
   const dragRef = useRef({ active: false, startX: 0, startY: 0 })
 
   // fit-to-container scale
@@ -1238,7 +1805,7 @@ function ImagePreview({ dataUrl, fileName }: ImagePreviewProps) {
     (el: HTMLDivElement | null) => {
       if (!el || !naturalSize.w || !naturalSize.h) return 1
       const rect = el.getBoundingClientRect()
-      return Math.min(rect.width / naturalSize.w, rect.height / naturalSize.h, 1)
+      return Math.max(MIN_ZOOM, Math.min(rect.width / naturalSize.w, rect.height / naturalSize.h, 1))
     },
     [naturalSize],
   )
@@ -1250,7 +1817,7 @@ function ImagePreview({ dataUrl, fileName }: ImagePreviewProps) {
 
     const updateFitScale = () => {
       const nextFitScale = computeFitScale(container)
-      setFitScale(nextFitScale)
+      setFitScale(previous => (Math.abs(previous - nextFitScale) < 0.001 ? previous : nextFitScale))
 
       if (!initialized) {
         scaleRef.current = nextFitScale
@@ -1355,7 +1922,12 @@ function ImagePreview({ dataUrl, fileName }: ImagePreviewProps) {
   const isActual = Math.abs(scale - 1) < 0.001 && translate.x === 0 && translate.y === 0
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden" style={{ contain: 'size layout' }}>
+      {imageError && (
+        <div role="alert" className="p-3 text-danger-100">
+          {t('fileExplorer.imageFailed')}
+        </div>
+      )}
       {/* Zoom toolbar */}
       <div className="shrink-0 flex items-center justify-center gap-1.5 px-2 py-1 border-b border-border-100/30 bg-bg-100/50 text-[length:var(--fs-xxs)]">
         <button
@@ -1388,7 +1960,7 @@ function ImagePreview({ dataUrl, fileName }: ImagePreviewProps) {
       {/* Image area */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-hidden relative cursor-grab active:cursor-grabbing"
+        className="flex-1 min-h-0 overflow-hidden relative cursor-grab active:cursor-grabbing"
         onMouseDown={handleMouseDown}
       >
         <img
@@ -1401,8 +1973,10 @@ function ImagePreview({ dataUrl, fileName }: ImagePreviewProps) {
             transformOrigin: 'center center',
           }}
           onLoad={e => {
-            setNaturalSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
+            const { naturalWidth: w, naturalHeight: h } = e.currentTarget
+            setNaturalSize(previous => (previous.w === w && previous.h === h ? previous : { w, h }))
           }}
+          onError={() => setImageError(true)}
         />
       </div>
     </div>
@@ -1475,6 +2049,7 @@ function TextMediaPreview({
 }
 
 interface HtmlFilePreviewProps {
+  serverId?: string
   text: string
   fileName: string
   filePath: string
@@ -1490,6 +2065,7 @@ function HtmlFilePreview({
   fileName,
   filePath,
   directory,
+  serverId,
   isResizing = false,
   targetLine,
   targetKey,
@@ -1523,6 +2099,7 @@ function HtmlFilePreview({
             title={fileName}
             filePath={filePath}
             directory={directory}
+            serverId={serverId}
             isResizing={isResizing}
           />
         </div>
@@ -1550,7 +2127,13 @@ interface MarkdownFilePreviewProps {
   targetRanges?: readonly TargetLineRange[]
 }
 
-function MarkdownFilePreview({ text, isResizing = false, targetLine, targetKey, targetRanges }: MarkdownFilePreviewProps) {
+function MarkdownFilePreview({
+  text,
+  isResizing = false,
+  targetLine,
+  targetKey,
+  targetRanges,
+}: MarkdownFilePreviewProps) {
   const { t } = useTranslation(['components', 'common'])
   const [mode, setMode] = useState<'preview' | 'code'>(targetLine ? 'code' : 'preview')
 

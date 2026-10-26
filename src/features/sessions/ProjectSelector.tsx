@@ -94,7 +94,7 @@ export function ProjectSelector({
   // Computed
   // ==========================================
 
-  const otherProjects = projects.filter(p => p.id !== currentProject?.id)
+  const otherProjects = projects.filter(p => p.id !== 'global' && p.id !== currentProject?.id)
 
   // ==========================================
   // Render

@@ -18,6 +18,8 @@ export interface SessionNavigationContextValue {
   currentSessionId?: string | null
   /** 当前 pane / 视图的有效目录 */
   currentDirectory?: string
+  /** Focus the originating chat pane before opening its file. */
+  focusPane?: () => void
 }
 
 /** 默认实现：走 hash 路由 */

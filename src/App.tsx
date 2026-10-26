@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke } from '@tauri-apps/api/core'
 import { Sidebar } from './features/chat'
@@ -85,6 +85,7 @@ function App() {
   })
   const splitPaneEnabled = canUseSplitPane(chatViewport)
   const paneLayout = usePaneLayout()
+  const activeServerId = useSyncExternalStore(serverStore.subscribe.bind(serverStore), () => serverStore.getActiveServerId())
   const focusedController = usePaneController(paneLayout.focusedPaneId)
   const paneControllers = usePaneControllers()
   const syncingFromRouteRef = useRef(false)
@@ -508,9 +509,12 @@ function App() {
   // 右侧面板（文件/diff/终端）绑定焦点 session 的服务器：
   // 切换焦点 session 到另一服务器时，右侧面板内容跟随该服务器而不是活动服务器
   const focusedServerId = useMemo(() => {
-    if (!paneLayout.focusedSessionId) return undefined
+    if (!paneLayout.focusedSessionId) return activeServerId
     return sessionKeyToServerId(paneLayout.focusedSessionId)
-  }, [paneLayout.focusedSessionId])
+  }, [paneLayout.focusedSessionId, activeServerId])
+
+  useLayoutEffect(() => { layoutStore.activateServerScope(focusedServerId) }, [focusedServerId])
+  const panelScopeReady = layoutStore.getServerScope() === focusedServerId
 
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('servers')
@@ -526,7 +530,7 @@ function App() {
   const renderPaneLeaf = useCallback(
     (paneId: string, paneSessionId: string | null) => (
       <ChatPane
-        key={paneId}
+        key={`${paneId}:${paneSessionId ? sessionKeyToServerId(paneSessionId) : activeServerId}`}
         paneId={paneId}
         sessionId={paneSessionId}
         isFocused={paneLayout.focusedPaneId === paneId}
@@ -545,6 +549,7 @@ function App() {
     ),
     [
       paneLayout.focusedPaneId,
+      activeServerId,
       paneLayout.paneCount,
       paneLayout.isSplit,
       paneLayout.fullscreenPaneId,
@@ -920,7 +925,8 @@ function App() {
                     scrollSnapStop: 'always',
                   }}
                 >
-                  <Sidebar
+                <Sidebar
+                  key={focusedServerId}
                     isOpen={sidebarExpanded}
                     selectedSessionId={paneLayout.focusedSessionId}
                     onSelectSession={handleSelectSession}
@@ -992,21 +998,23 @@ function App() {
                     scrollSnapStop: 'always',
                   }}
                 >
-                  <RightPanel
+                  {panelScopeReady && <RightPanel
+                    key={focusedServerId}
                     directory={focusedDirectory}
                     sessionId={paneLayout.focusedSessionId}
                     serverId={focusedServerId}
                     inline
                     renderPanelContent={rightPanelOpen || shouldRenderMobileRightPanel}
-                  />
+                  />}
                 </section>
               </div>
 
-              <BottomPanel directory={focusedDirectory} serverId={focusedServerId} />
+              {panelScopeReady && <BottomPanel key={focusedServerId} directory={focusedDirectory} serverId={focusedServerId} />}
             </>
           ) : (
             <>
               <Sidebar
+                key={focusedServerId}
                 isOpen={sidebarExpanded}
                 selectedSessionId={paneLayout.focusedSessionId}
                 onSelectSession={handleSelectSession}
@@ -1033,14 +1041,15 @@ function App() {
                     />
                   </div>
 
-                  <BottomPanel directory={focusedDirectory} serverId={focusedServerId} />
+                  {panelScopeReady && <BottomPanel key={focusedServerId} directory={focusedDirectory} serverId={focusedServerId} />}
                 </div>
 
-                <RightPanel
+                {panelScopeReady && <RightPanel
+                  key={focusedServerId}
                   directory={focusedDirectory}
                   sessionId={paneLayout.focusedSessionId}
                   serverId={focusedServerId}
-                />
+                />}
               </div>
             </>
           )}

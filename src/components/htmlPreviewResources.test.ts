@@ -18,6 +18,8 @@ describe('htmlPreviewResources', () => {
     expect(resolveHtmlResourcePath('pages/index.html', '../../.env', 'C:\\repo')).toBeNull()
     expect(resolveHtmlResourcePath('pages/index.html', 'https://example.com/app.js')).toBeNull()
     expect(resolveHtmlResourcePath('pages/index.html', 'data:image/png;base64,abc')).toBeNull()
+    expect(resolveHtmlResourcePath('pages/index.html', '%2F%2Fother-host/image.png')).toBeNull()
+    expect(resolveHtmlResourcePath('pages/index.html', '%43%3A%2Fprivate/image.png')).toBeNull()
   })
 
   it('inlines relative scripts, styles, CSS assets, and media', async () => {
@@ -55,6 +57,21 @@ describe('htmlPreviewResources', () => {
 
     expect(parsed.querySelector('img')?.getAttribute('src')).toBe('./missing.png')
     expect(parsed.body.textContent).toContain('Still visible')
+  })
+
+  it('uses the requested server for every relative dependency', async () => {
+    getFileContent.mockImplementation(async (path: string) => ({ type: 'text', content: path.endsWith('.css') ? 'body{color:red}' : 'window.ready=true' }))
+    await resolveHtmlPreviewResources('<link rel="stylesheet" href="style.css"><script src="app.js"></script>', 'index.html', '/project-b', 'server-b')
+    expect(getFileContent).toHaveBeenCalledWith('style.css', '/project-b', 'server-b')
+    expect(getFileContent).toHaveBeenCalledWith('app.js', '/project-b', 'server-b')
+  })
+
+  it('bounds dependency fan-out and ignores oversized assets without failing the page', async () => {
+    getFileContent.mockResolvedValue({ type: 'binary', encoding: 'base64', mimeType: 'image/png', content: 'A'.repeat(5 * 1024 * 1024) })
+    const source = Array.from({ length: 100 }, (_, i) => `<img src="image${i}.png">`).join('')
+    const html = await resolveHtmlPreviewResources(source, 'index.html', '/project', 'server-b')
+    expect(getFileContent).toHaveBeenCalledTimes(64)
+    expect(html).not.toContain('data:image/png;base64')
   })
 
   it('rejects sensitive files before calling the file API', async () => {

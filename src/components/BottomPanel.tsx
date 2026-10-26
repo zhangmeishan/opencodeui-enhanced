@@ -63,14 +63,9 @@ export const BottomPanel = memo(function BottomPanel({ directory, serverId }: Bo
   }, [])
 
   // 目录变化时（包括全局模式），重新拉取该目录的 PTY 会话
-  const prevDirectoryRef = useRef<string | undefined>(undefined)
-  const hasRestoredDirectoryRef = useRef(false)
   const restoreRequestIdRef = useRef(0)
   useEffect(() => {
-    // 目录没变就不重复拉取
-    if (hasRestoredDirectoryRef.current && prevDirectoryRef.current === normalizedDirectory) return
-    hasRestoredDirectoryRef.current = true
-    prevDirectoryRef.current = normalizedDirectory
+    let disposed = false
 
     const restoreSessions = async (requestId: number) => {
       try {
@@ -78,7 +73,7 @@ export const BottomPanel = memo(function BottomPanel({ directory, serverId }: Bo
 
         // 拉取新目录下的 PTY 会话
         const sessions = await listPtySessions(normalizedDirectory, serverId)
-        if (restoreRequestIdRef.current !== requestId) return
+        if (disposed || restoreRequestIdRef.current !== requestId) return
         logger.log('[BottomPanel] PTY sessions for', normalizedDirectory, ':', sessions)
 
         layoutStore.syncTerminalSessions(
@@ -89,24 +84,26 @@ export const BottomPanel = memo(function BottomPanel({ directory, serverId }: Bo
             status: pty.status === 'running' ? 'connecting' : 'exited',
             serverId,
           })),
+          serverId,
         )
       } catch (error) {
         uiErrorHandler('restore terminal sessions', error)
       } finally {
-        if (restoreRequestIdRef.current === requestId) {
+        if (!disposed && restoreRequestIdRef.current === requestId) {
           setIsRestoring(false)
         }
       }
     }
 
     void restoreSessions(++restoreRequestIdRef.current)
-    return serverStore.onServerChange((changedId, reason) => {
+    const off = serverStore.onServerChange((changedId, reason) => {
       // 评审 N2：终端恢复的数据主体是 serverId ?? active（对齐 useVcsInfo 的绑定语义）。
       // 旧实现拿 changedId 与 active 比对：面板固定绑定 WSL 而 active 在 local 时，
       // 这台 WSL 换端口重启会被误跳过（终端全部失联）；反之无关服务器切换会误触发重恢复。
       if (!affectsBoundServer(serverId, changedId, reason, serverStore.getActiveServerId())) return
       void restoreSessions(++restoreRequestIdRef.current)
     })
+    return () => { disposed = true; off() }
   }, [normalizedDirectory, serverId])
 
   // 创建新终端
@@ -300,13 +297,14 @@ const FilesContent = memo(function FilesContent({
         <div key={tab.id} className={tab.id === activeTab.id ? 'h-full' : 'hidden'}>
           <FileExplorer
             panelTabId={tab.id}
-            directory={directory}
-            serverId={serverId}
+            mode="preview"
+            directory={tab.previewFile?.directory ?? directory}
+            serverId={tab.previewFile?.serverId ?? serverId}
             previewFile={tab.previewFile ?? null}
             previewFiles={tab.previewFiles ?? []}
             position="bottom"
             isPanelResizing={isPanelResizing}
-            sessionId={sessionId}
+            sessionId={tab.previewFile?.directory ? undefined : sessionId}
           />
         </div>
       ))}

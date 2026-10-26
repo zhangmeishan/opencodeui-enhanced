@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LayoutStore } from './layoutStore'
+import { clearFileDrafts, fileDraftKey, putFileDraft, getFileDraft } from './fileDraftStore'
 
 const STORAGE_KEY_PANEL_LAYOUT = 'opencode-panel-layout'
 
 describe('LayoutStore panel and terminal layout', () => {
   beforeEach(() => {
     localStorage.clear()
+    clearFileDrafts()
   })
 
   afterEach(() => {
@@ -158,5 +160,81 @@ describe('LayoutStore panel and terminal layout', () => {
     const restored = new LayoutStore().getState()
     expect(restored.terminalCopyOnSelect).toBe(true)
     expect(restored.terminalRightClickPaste).toBe(true)
+  })
+
+  it('does not reuse identical relative file paths across different projects or servers', () => {
+    const store = new LayoutStore()
+    store.openFilePreview({ path: 'report.pdf', name: 'report.pdf', directory: '/a', serverId: 'server-a' }, 'right')
+    store.openFilePreview({ path: 'notes.md', name: 'notes.md', directory: '/a', serverId: 'server-a' }, 'right')
+    expect(store.getState().panelTabs.find(tab => tab.type === 'files')?.previewFiles).toHaveLength(2)
+    store.openFilePreview({ path: 'report.pdf', name: 'report.pdf', directory: '/a', serverId: 'server-b' }, 'right')
+    const files = store.getState().panelTabs.find(tab => tab.type === 'files')!
+    expect(files.previewFiles).toHaveLength(1)
+    expect(files.previewFile?.serverId).toBe('server-b')
+    expect(store.getState().rightPanelOpen).toBe(true)
+  })
+
+  it('keeps a dirty tab open if the user cancels discarding changes', () => {
+    const store = new LayoutStore()
+    store.openFilePreview({ path: 'notes.md', name: 'notes.md', directory: '/repo', serverId: 'server-b' }, 'right')
+    putFileDraft({ key: fileDraftKey('notes.md', '/repo', 'server-b'), path: 'notes.md', directory: '/repo', serverId: 'server-b', hash: '', original: new Uint8Array(), text: 'edit', savedText: '', bom: false, eol: '\n', dirty: true })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    store.closeFilePreview('files', 'notes.md')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFile?.path).toBe('notes.md')
+    expect(confirm).toHaveBeenCalledOnce()
+    confirm.mockRestore()
+  })
+
+  it('shows only the selected server files and restores each servers tabs independently', () => {
+    const store = new LayoutStore()
+    store.activateServerScope('server-a')
+    const a = { path: 'report.md', name: 'report.md', directory: '/workspace', serverId: 'server-a' }
+    store.openFilePreview(a, 'right')
+    store.activateServerScope('server-b')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFiles).toEqual([])
+    expect(store.getState().rightPanelOpen).toBe(false)
+    const b = { ...a, serverId: 'server-b' }
+    store.openFilePreview(b, 'right')
+    store.activateServerScope('server-a')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFiles).toEqual([a])
+    expect(store.getState().rightPanelOpen).toBe(true)
+    store.activateServerScope('server-b')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFiles).toEqual([b])
+  })
+
+  it('isolates terminal snapshots with identical directory and PTY ids and ignores late updates', () => {
+    const store = new LayoutStore()
+    store.activateServerScope('server-a')
+    store.syncTerminalSessions('/workspace', [{ id: 'pty-shared', title: 'A terminal', status: 'connected', serverId: 'server-a' }], 'server-a')
+    store.updateTerminalSnapshot('pty-shared', { buffer: 'A output' }, 'server-a')
+    store.activateServerScope('server-b')
+    expect(store.getState().panelTabs.some(tab => tab.type === 'terminal')).toBe(false)
+    store.syncTerminalSessions('/workspace', [{ id: 'pty-shared', title: 'B terminal', status: 'connected', serverId: 'server-b' }], 'server-b')
+    expect(store.getState().panelTabs.find(tab => tab.type === 'terminal')?.buffer).toBeUndefined()
+    store.updateTerminalSnapshot('pty-shared', { buffer: 'late A output' }, 'server-a')
+    store.updateTerminalTab('pty-shared', { status: 'disconnected' }, 'server-a')
+    store.syncTerminalSessions('/workspace', [{ id: 'old-a', title: 'late A', status: 'connected', serverId: 'server-a' }], 'server-a')
+    expect(store.getState().panelTabs.find(tab => tab.type === 'terminal')).toMatchObject({ title: 'B terminal', status: 'connected' })
+    store.updateTerminalSnapshot('pty-shared', { buffer: 'B output' }, 'server-b')
+    store.activateServerScope('server-a')
+    expect(store.getState().panelTabs.find(tab => tab.type === 'terminal')?.buffer).toBe('A output')
+    const persisted = JSON.parse(localStorage.getItem('opencode-terminal-layout')!)
+    expect(persisted.directories['server-a::/workspace'].sessions['pty-shared'].buffer).toBe('A output')
+    expect(persisted.directories['server-b::/workspace'].sessions['pty-shared'].buffer).toBe('B output')
+  })
+
+  it('retains unsaved server-scoped drafts without displaying their file tabs on the next server', () => {
+    const store = new LayoutStore()
+    store.activateServerScope('server-a')
+    store.openFilePreview({ path: 'notes.md', name: 'notes.md', directory: '/repo', serverId: 'server-a' }, 'right')
+    const key = fileDraftKey('notes.md', '/repo', 'server-a')
+    putFileDraft({ key, path: 'notes.md', directory: '/repo', serverId: 'server-a', hash: '', original: new Uint8Array(), text: 'unsaved', savedText: '', bom: false, eol: '\n', dirty: true })
+    store.activateServerScope('server-b')
+    expect(getFileDraft(key)?.text).toBe('unsaved')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFile).toBeNull()
+    store.openFilePreview({ path: 'late.md', name: 'late.md', directory: '/repo', serverId: 'server-a' }, 'right')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFile).toBeNull()
+    store.activateServerScope('server-a')
+    expect(store.getState().panelTabs.find(tab => tab.id === 'files')?.previewFile?.path).toBe('notes.md')
   })
 })

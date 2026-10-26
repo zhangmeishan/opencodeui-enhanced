@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBox } from './InputBox'
+import { addFileContextToChat } from '../../utils/chatContext'
+import { paneLayoutStore } from '../../store/paneLayoutStore'
 
 let selectedFiles: File[] = []
 
@@ -84,6 +86,126 @@ vi.mock('../../store/keybindingStore', () => ({
 describe('InputBox attachment handling', () => {
   beforeEach(() => {
     selectedFiles = []
+  })
+
+  it('inserts a selection as a compact card into the focused input and sends its actual text', async () => {
+    const { focusedPaneId, focusedSessionId } = paneLayoutStore.getSnapshot()
+    const onSend = vi.fn(() => true)
+    render(<InputBox paneId={focusedPaneId!} sessionId={focusedSessionId} onSend={onSend} />)
+    await act(async () => {
+      expect(
+        await addFileContextToChat(
+          { path: 'code.ts', directory: '/project', serverId: 'remote' },
+          { text: 'selected unsaved code', startLine: 4, startColumn: 3, endLine: 6, endColumn: 8 },
+        ),
+      ).toBe(true)
+    })
+    expect(screen.getByTestId('attachment-count')).toHaveTextContent('0')
+    expect(screen.getByRole('textbox')).toHaveValue('⟦code.ts:4:3-6:8⟧ ')
+    expect(onSend).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    const sent = onSend.mock.calls[0] as unknown as [
+      string,
+      Array<{ type: string; displayName: string; content: string }>,
+    ]
+    expect(sent[1][0]).toMatchObject({
+      type: 'text',
+      displayName: 'code.ts:4:3-6:8',
+      content: expect.stringContaining('selected unsaved code'),
+    })
+  })
+
+  it('does not insert context into a disabled input', async () => {
+    const { focusedPaneId, focusedSessionId } = paneLayoutStore.getSnapshot()
+    render(<InputBox paneId={focusedPaneId!} sessionId={focusedSessionId} onSend={vi.fn()} disabled />)
+    await act(async () => {
+      expect(
+        await addFileContextToChat(
+          { path: 'code.ts', directory: '/project', serverId: 'remote' },
+          { text: 'selected' },
+        ),
+      ).toBe(false)
+    })
+    expect(screen.getByTestId('attachment-count')).toHaveTextContent('0')
+  })
+
+  it('inserts a single-line reference at the retained caret and keeps the caret immediately after it', async () => {
+    const { focusedPaneId, focusedSessionId } = paneLayoutStore.getSnapshot()
+    const onSend = vi.fn(() => true)
+    render(<InputBox paneId={focusedPaneId!} sessionId={focusedSessionId} onSend={onSend} />)
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: 'before after' } })
+    input.focus()
+    input.setSelectionRange(7, 7)
+    input.blur()
+    await act(async () => {
+      await addFileContextToChat(
+        { path: 'note.txt', directory: '/project', serverId: 'remote' },
+        { text: 'actual\nmultiline content', startLine: 2, startColumn: 1, endLine: 3, endColumn: 8 },
+      )
+    })
+    expect(input.value).toBe('before ⟦note.txt:2:1-3:8⟧ after')
+    expect(input.value).not.toContain('\n')
+    await waitFor(() => expect(input.selectionStart).toBe('before ⟦note.txt:2:1-3:8⟧ '.length))
+    expect(input.selectionEnd).toBe(input.selectionStart)
+    expect(input).toHaveFocus()
+    expect(screen.getByTestId('attachment-count')).toHaveTextContent('0')
+    // Typing before the marker shifts its range rather than losing the context.
+    fireEvent.change(input, { target: { value: `prefix ${input.value}` } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    const sent = onSend.mock.calls[0] as unknown as [
+      string,
+      Array<{ textRange: { start: number; end: number; value: string }; content: string }>,
+    ]
+    expect(sent[1]).toHaveLength(1)
+    expect(sent[0].slice(sent[1][0].textRange.start, sent[1][0].textRange.end)).toBe('⟦note.txt:2:1-3:8⟧')
+    expect(sent[1][0].content).toContain('actual\nmultiline content')
+  })
+
+  it('removes selected context when its inline marker is deleted', async () => {
+    const { focusedPaneId, focusedSessionId } = paneLayoutStore.getSnapshot()
+    const onSend = vi.fn(() => true)
+    render(<InputBox paneId={focusedPaneId!} sessionId={focusedSessionId} onSend={onSend} />)
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: 'question ' } })
+    input.setSelectionRange(input.value.length, input.value.length)
+    await act(async () => {
+      await addFileContextToChat({ path: 'note.txt', directory: '/project', serverId: 'remote' }, { text: 'selected' })
+    })
+    fireEvent.change(input, { target: { value: 'question ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect((onSend.mock.calls[0] as unknown as [string, unknown[]])[1]).toEqual([])
+  })
+  it('inserts two identical selection labels at their distinct caret locations without losing either context', async () => {
+    const { focusedPaneId, focusedSessionId } = paneLayoutStore.getSnapshot()
+    const onSend = vi.fn(() => true)
+    render(<InputBox paneId={focusedPaneId!} sessionId={focusedSessionId} onSend={onSend} />)
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: 'left right' } })
+    input.setSelectionRange(5, 5)
+    const source = { path: 'same.txt', directory: '/project', serverId: 'remote' }
+    await act(async () => {
+      await addFileContextToChat(source, { text: 'first context' })
+    })
+    input.setSelectionRange(0, 0)
+    await act(async () => {
+      await addFileContextToChat(source, { text: 'second context' })
+    })
+    expect(input.value).toBe('⟦same.txt⟧ left ⟦same.txt⟧ right')
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    const sent = onSend.mock.calls[0] as unknown as [
+      string,
+      Array<{ textRange: { value: string; start: number; end: number }; content: string }>,
+    ]
+    expect(sent[1]).toHaveLength(2)
+    for (const attachment of sent[1])
+      expect(sent[0].slice(attachment.textRange.start, attachment.textRange.end)).toBe(attachment.textRange.value)
+    expect(sent[1][0].content).toContain('first context')
+    expect(sent[1][1].content).toContain('second context')
   })
 
   it('accepts files whose mime is inferred from the filename extension', async () => {

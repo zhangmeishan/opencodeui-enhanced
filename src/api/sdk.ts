@@ -36,7 +36,11 @@ function createAbortError(message: string) {
   return new DOMException(message, 'AbortError')
 }
 
-async function trackedFetch(input: RequestInfo | URL, init: RequestInit | undefined, generation: number): Promise<Response> {
+async function trackedFetch(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  generation: number,
+): Promise<Response> {
   const controller = new AbortController()
   // The generated SDK passes a Request (including its signal), without init.
   const externalSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
@@ -83,6 +87,7 @@ export function abortInFlightApiRequests(reason = 'Server endpoint changed'): vo
 // 缺省 serverId（undefined）表示活动服务器
 interface CachedClientEntry {
   key: string
+  generation: number
   client: OpencodeClient
 }
 
@@ -112,7 +117,7 @@ function buildHeaders(serverId?: string): Record<string, string> {
 export function getSDKClient(serverId?: string): OpencodeClient {
   const key = buildCacheKey(serverId)
   const cached = _cachedClients.get(serverId)
-  if (cached && cached.key === key) {
+  if (cached && cached.key === key && cached.generation === _apiRequestGeneration) {
     return cached.client
   }
 
@@ -125,7 +130,7 @@ export function getSDKClient(serverId?: string): OpencodeClient {
     headers,
     fetch: (input, init) => trackedFetch(input, init, generation),
   })
-  _cachedClients.set(serverId, { key, client })
+  _cachedClients.set(serverId, { key, generation, client })
   return client
 }
 

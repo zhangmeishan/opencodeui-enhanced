@@ -1,0 +1,9 @@
+services:
+  frontend:
+    image: opencodeui-frontend:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+
+    volumes:
+      - ./Caddyfile.multi:/etc/caddy/Caddyfile.standalone:ro

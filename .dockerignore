@@ -13,3 +13,6 @@ workspace
 .DS_Store
 .ruff_cache
 README.md
+.env.office
+office-bridge/config.json
+office-data

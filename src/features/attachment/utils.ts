@@ -1,5 +1,6 @@
 import { FileIcon, FolderIcon, AgentIcon, ImageIcon, TerminalIcon } from '../../components/Icons'
 import type { Attachment } from './types'
+import { contextAttachmentFromText } from '../../utils/contextSnapshot'
 
 /**
  * 从 API file part 创建 Attachment
@@ -73,6 +74,8 @@ export function fromAgentPart(part: {
  * 从 API synthetic text part 创建 Attachment
  */
 export function fromTextPart(part: { id?: string; text: string }): Attachment {
+  const context = contextAttachmentFromText(part.text, part.id)
+  if (context) return context
   const text = part.text.trim()
 
   // 简化命名逻辑，直接使用内容摘要

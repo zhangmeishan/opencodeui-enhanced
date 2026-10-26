@@ -96,10 +96,18 @@ export function createSandboxedHtmlDocument(
   const parsed = new DOMParser().parseFromString(source, 'text/html')
   const viewportHead = parsed.head.querySelector('meta[name="viewport"]') ? '' : HTML_SANDBOX_VIEWPORT_HEAD
   const themeHead = `<style id="opencode-html-theme">${buildHtmlSandboxThemeCss(theme, overflow)}</style>`
-  parsed.head.insertAdjacentHTML('afterbegin', `${securityHead}${viewportHead}${themeHead}${createHtmlSandboxStorageScript()}`)
+  parsed.head.insertAdjacentHTML(
+    'afterbegin',
+    `${securityHead}${viewportHead}${themeHead}${createHtmlSandboxStorageScript()}`,
+  )
   parsed.body.insertAdjacentHTML(
     'afterbegin',
     `${createThemeApplyScript(overflow)}${createHtmlSandboxMeasureScript(resizeId)}`,
   )
+  if (overflow === 'auto')
+    parsed.body.insertAdjacentHTML(
+      'afterbegin',
+      `<script>addEventListener('contextmenu',event=>{const selected=getSelection(),text=selected?.toString()||'';if(!text.trim()||!selected.rangeCount)return;event.preventDefault();const range=selected.getRangeAt(0),walker=document.createTreeWalker(document.body,4);let node,displayed='',from=-1,to=-1;while(node=walker.nextNode()){if(node.parentElement?.closest('script,style,template'))continue;const offset=displayed.length;if(node===range.startContainer)from=offset+range.startOffset;if(node===range.endContainer)to=offset+range.endOffset;displayed+=node.data}parent.postMessage({type:'opencode-html-selection',id:${JSON.stringify(resizeId)},text,x:event.clientX,y:event.clientY,displayed,from,to},'*')})</script>`,
+    )
   return `<!doctype html>${parsed.documentElement.outerHTML}`
 }

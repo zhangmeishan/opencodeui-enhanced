@@ -11,6 +11,7 @@
 import type { Message, MessageError, Part, FilePart, AgentPart } from '../types/message'
 import type { ApiMessageWithParts, ApiMessage, ApiPart, ApiSession, Attachment } from '../api/types'
 import { logger } from '../utils/logger'
+import { contextAttachmentFromText } from '../utils/contextSnapshot'
 import { isUserUIMessage, toUIMessage, toUIMessageInfo, toUIPart } from '../utils/messageConversion'
 import type { RevertState, RevertHistoryItem, SessionState, SendRollbackSnapshot } from './messageStoreTypes'
 
@@ -808,7 +809,10 @@ class MessageStore {
     const attachments: Attachment[] = []
 
     for (const part of message.parts) {
-      if (part.type === 'file') {
+      if (part.type === 'text' && part.synthetic) {
+        const context = contextAttachmentFromText(part.text, part.id)
+        if (context) attachments.push(context)
+      } else if (part.type === 'file') {
         const fp = part as FilePart
         const isFolder = fp.mime === 'application/x-directory'
         const sourcePath =

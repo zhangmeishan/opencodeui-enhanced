@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { getCurrentProject, listWorktrees } from '../api'
-import { subscribeToEvents } from '../api/events'
+import { subscribeToServerEvents } from '../api/events'
 import { serverStore } from '../store/serverStore'
-import { normalizeToForwardSlash } from '../utils'
+import { isSameDirectory, normalizeToForwardSlash } from '../utils'
+import { affectsBoundServer } from '../store/serverChangeScope'
 
 export interface GitWorkspaceMeta {
   isGit: boolean
@@ -14,6 +15,7 @@ export interface GitWorkspaceMeta {
 export type GitWorkspaceCatalog = Map<string, GitWorkspaceMeta>
 
 type RefreshListener = () => void
+const EMPTY_CATALOG: GitWorkspaceCatalog = new Map()
 
 const refreshListeners = new Set<RefreshListener>()
 
@@ -22,16 +24,27 @@ export function requestGitWorkspaceCatalogRefresh() {
 }
 
 export function useGitWorkspaceCatalog(directories: string[], serverId?: string) {
+  const boundServerId = useSyncExternalStore(
+    serverStore.subscribe.bind(serverStore),
+    () => serverId ?? serverStore.getActiveServerId(),
+  )
   const [catalog, setCatalog] = useState<GitWorkspaceCatalog>(new Map())
+  const [catalogOwner, setCatalogOwner] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const mountedRef = useRef(true)
   const versionRef = useRef(0)
   const catalogRef = useRef<GitWorkspaceCatalog>(new Map())
+  const ownerRef = useRef<string | null>(null)
 
-  const setCatalogState = useCallback((nextCatalog: GitWorkspaceCatalog) => {
-    catalogRef.current = nextCatalog
-    setCatalog(nextCatalog)
-  }, [])
+  const setCatalogState = useCallback(
+    (nextCatalog: GitWorkspaceCatalog) => {
+      catalogRef.current = nextCatalog
+      ownerRef.current = boundServerId
+      setCatalogOwner(boundServerId)
+      setCatalog(nextCatalog)
+    },
+    [boundServerId],
+  )
 
   const refresh = useCallback(async () => {
     const version = ++versionRef.current
@@ -47,13 +60,13 @@ export function useGitWorkspaceCatalog(directories: string[], serverId?: string)
     }
 
     setIsLoading(true)
-    const previousCatalog = catalogRef.current
+    const previousCatalog = ownerRef.current === boundServerId ? catalogRef.current : EMPTY_CATALOG
 
     try {
       const projectResults = await Promise.allSettled(
         normalizedDirectories.map(async directory => ({
           directory,
-          project: await getCurrentProject(directory, serverId),
+          project: await getCurrentProject(directory, boundServerId),
         })),
       )
 
@@ -107,7 +120,7 @@ export function useGitWorkspaceCatalog(directories: string[], serverId?: string)
       const workspaceResults = await Promise.allSettled(
         rootDirectoryList.map(async rootDirectory => ({
           rootDirectory,
-          worktrees: await listWorktrees(rootDirectory, serverId),
+          worktrees: await listWorktrees(rootDirectory, boundServerId),
         })),
       )
 
@@ -126,7 +139,7 @@ export function useGitWorkspaceCatalog(directories: string[], serverId?: string)
 
         const { worktrees } = result.value
         const normalizedWorktrees = Array.from(new Set(worktrees.map(worktree => normalizeToForwardSlash(worktree))))
-        const sandboxes = normalizedWorktrees.filter(worktree => worktree.toLowerCase() !== rootDirectory.toLowerCase())
+        const sandboxes = normalizedWorktrees.filter(worktree => !isSameDirectory(worktree, rootDirectory))
         rootToWorkspaces.set(rootDirectory, [rootDirectory, ...sandboxes])
       }
 
@@ -144,7 +157,7 @@ export function useGitWorkspaceCatalog(directories: string[], serverId?: string)
         setIsLoading(false)
       }
     }
-  }, [directories, serverId, setCatalogState])
+  }, [directories, boundServerId, setCatalogState])
 
   useEffect(() => {
     mountedRef.current = true
@@ -155,14 +168,14 @@ export function useGitWorkspaceCatalog(directories: string[], serverId?: string)
   }, [refresh])
 
   useEffect(() => {
-    return subscribeToEvents({
+    return subscribeToServerEvents(boundServerId, {
       onWorktreeReady: () => void refresh(),
       onWorktreeFailed: () => void refresh(),
       onReconnected: reason => {
         if (reason !== 'server-switch') void refresh()
       },
     })
-  }, [refresh])
+  }, [refresh, boundServerId])
 
   useEffect(() => {
     const listener = () => void refresh()
@@ -173,11 +186,18 @@ export function useGitWorkspaceCatalog(directories: string[], serverId?: string)
   }, [refresh])
 
   useEffect(() => {
-    return serverStore.onServerChange(() => void refresh())
-  }, [refresh])
+    return serverStore.onServerChange((changedServerId, reason) => {
+      if (!affectsBoundServer(serverId, changedServerId, reason, serverStore.getActiveServerId())) return
+      catalogRef.current = new Map()
+      ownerRef.current = null
+      setCatalogOwner(null)
+      setCatalog(new Map())
+      if (serverId || boundServerId === serverStore.getActiveServerId()) void refresh()
+    })
+  }, [refresh, serverId, boundServerId])
 
   return {
-    catalog,
+    catalog: catalogOwner === boundServerId ? catalog : EMPTY_CATALOG,
     isLoading,
     refresh,
   }

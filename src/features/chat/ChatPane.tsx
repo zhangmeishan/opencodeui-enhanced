@@ -392,8 +392,8 @@ export const ChatPane = memo(function ChatPane({
   }, [activeServer, activeServerHealth])
 
   const navigationCtx = useMemo(
-    () => ({ navigateToSession, currentSessionId: routeSessionId, currentDirectory: effectiveDirectory }),
-    [navigateToSession, routeSessionId, effectiveDirectory],
+    () => ({ navigateToSession, currentSessionId: routeSessionId, currentDirectory: effectiveDirectory, focusPane: () => paneLayoutStore.focusPane(paneId) }),
+    [navigateToSession, routeSessionId, effectiveDirectory, paneId],
   )
 
   // ============================================

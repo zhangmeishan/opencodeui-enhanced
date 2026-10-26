@@ -20,8 +20,100 @@ describe('HtmlFilePreviewFrame', () => {
     resolveHtmlPreviewResources.mockImplementation(async (html: string) => html)
   })
 
+  it('bridges a selected HTML preview fragment only from its own frame', () => {
+    const { container } = render(<HtmlFilePreviewFrame html="<p>Selected HTML</p>" title="selection.html" />)
+    const frame = screen.getByTitle('selection.html') as HTMLIFrameElement
+    const srcDoc = frame.getAttribute('srcdoc')!
+    const id = srcDoc.match(/type:'opencode-html-selection',id:("[^"]+")/)![1]
+    const listener = vi.fn()
+    container.addEventListener('opencode-preview-selection', listener)
+    const data = { type: 'opencode-html-selection', id: JSON.parse(id), text: 'Selected HTML', x: 10, y: 20 }
+    window.dispatchEvent(new MessageEvent('message', { source: window, data }))
+    expect(listener).not.toHaveBeenCalled()
+    window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data }))
+    expect(listener).toHaveBeenCalledOnce()
+    expect(listener.mock.calls[0][0].detail).toEqual({ text: 'Selected HTML', x: 10, y: 20 })
+  })
+  it('maps iframe selection offsets to the original HTML source before sending a context request', () => {
+    const { container } = render(
+      <div data-text-file-preview>
+        <HtmlFilePreviewFrame html={'<p>hello &amp; world</p>\n<p>hello</p>'} title="mapped.html" />
+      </div>,
+    )
+    const frame = screen.getByTitle('mapped.html') as HTMLIFrameElement
+    const id = JSON.parse(frame.getAttribute('srcdoc')!.match(/type:'opencode-html-selection',id:("[^"]+")/)![1])
+    const listener = vi.fn()
+    container.addEventListener('opencode-preview-selection', listener)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: frame.contentWindow,
+        data: {
+          type: 'opencode-html-selection',
+          id,
+          text: 'hello',
+          x: 0,
+          y: 0,
+          displayed: 'hello & world\nhello',
+          from: 14,
+          to: 19,
+        },
+      }),
+    )
+    expect(listener.mock.calls[0][0].detail.selection).toEqual({
+      text: 'hello',
+      startLine: 2,
+      startColumn: 4,
+      endLine: 2,
+      endColumn: 9,
+    })
+  })
+  it('ignores a selection message from the previous document after replacing HTML in the same frame', () => {
+    const view = render(<HtmlFilePreviewFrame html="<p>old</p>" title="selection.html" />)
+    const frame = screen.getByTitle('selection.html') as HTMLIFrameElement
+    const id = JSON.parse(frame.getAttribute('srcdoc')!.match(/type:'opencode-html-selection',id:("[^"]+")/)![1])
+    const listener = vi.fn()
+    view.container.addEventListener('opencode-preview-selection', listener)
+    view.rerender(<HtmlFilePreviewFrame html="<p>new</p>" title="selection.html" />)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: frame.contentWindow,
+        data: { type: 'opencode-html-selection', id, text: 'old', x: 0, y: 0, displayed: 'old', from: 0, to: 3 },
+      }),
+    )
+    expect(listener).not.toHaveBeenCalled()
+  })
+  it.each(['hello', 'generated'])('bridges a fuzzy selection from dynamic HTML (%s)', text => {
+    const html = '<p>hello</p><script>update()</script>'
+    const { container } = render(
+      <div data-text-file-preview>
+        <HtmlFilePreviewFrame html={html} title="dynamic.html" />
+      </div>,
+    )
+    const frame = screen.getByTitle('dynamic.html') as HTMLIFrameElement
+    const id = JSON.parse(frame.getAttribute('srcdoc')!.match(/type:'opencode-html-selection',id:("[^"]+")/)![1])
+    const listener = vi.fn()
+    container.addEventListener('opencode-preview-selection', listener)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: frame.contentWindow,
+        data: { type: 'opencode-html-selection', id, text, x: 1, y: 2, displayed: text, from: 0, to: text.length },
+      }),
+    )
+    expect(listener).toHaveBeenCalledOnce()
+    expect(listener.mock.calls[0][0].detail).toMatchObject({
+      mappedSource: html,
+      selection: { text, fuzzy: true },
+    })
+    expect(listener.mock.calls[0][0].detail.mappingFailed).toBeUndefined()
+  })
+
   it('renders a file as a script-enabled opaque-origin sandbox', () => {
-    render(<HtmlFilePreviewFrame html={'<main>Preview</main><script>document.body.dataset.ready="yes"</script>'} title="index.html" />)
+    render(
+      <HtmlFilePreviewFrame
+        html={'<main>Preview</main><script>document.body.dataset.ready="yes"</script>'}
+        title="index.html"
+      />,
+    )
 
     const frame = screen.getByTitle('index.html')
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
@@ -48,6 +140,12 @@ describe('HtmlFilePreviewFrame', () => {
     const srcDoc = screen.getByTitle('custom-viewport.html').getAttribute('srcdoc') ?? ''
     expect(srcDoc.match(/name="viewport"/g)).toHaveLength(1)
     expect(srcDoc).toContain('name="viewport" content="width=640"')
+  })
+
+  it('renders an empty HTML file as a blank document instead of loading forever', () => {
+    render(<HtmlFilePreviewFrame html="" title="empty.html" />)
+    expect(screen.getByTitle('empty.html')).toHaveAttribute('srcdoc')
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull()
   })
 
   it('updates theme without replacing the preview document', async () => {
@@ -102,5 +200,52 @@ describe('HtmlFilePreviewFrame', () => {
       await Promise.resolve()
     })
     await waitFor(() => expect(screen.getByTitle('second.html').getAttribute('srcdoc')).toContain('Resolved second'))
+  })
+
+  it('resolves relative resources using the preview file server', async () => {
+    render(
+      <HtmlFilePreviewFrame
+        html='<img src="logo.png">'
+        title="page.html"
+        filePath="page.html"
+        directory="/project"
+        serverId="server-b"
+      />,
+    )
+    await waitFor(() =>
+      expect(resolveHtmlPreviewResources).toHaveBeenCalledWith(
+        '<img src="logo.png">',
+        'page.html',
+        '/project',
+        'server-b',
+      ),
+    )
+  })
+
+  it('does not reuse resources from a different server with the same path', async () => {
+    resolveHtmlPreviewResources.mockImplementation(
+      async (_html: string, _path?: string, _directory?: string, serverId?: string) => `<main>${serverId}</main>`,
+    )
+    const view = render(
+      <HtmlFilePreviewFrame
+        html="<main>source</main>"
+        title="page.html"
+        filePath="page.html"
+        directory="/project"
+        serverId="server-a"
+      />,
+    )
+    await waitFor(() => expect(screen.getByTitle('page.html').getAttribute('srcdoc')).toContain('server-a'))
+    view.rerender(
+      <HtmlFilePreviewFrame
+        html="<main>source</main>"
+        title="page.html"
+        filePath="page.html"
+        directory="/project"
+        serverId="server-b"
+      />,
+    )
+    await waitFor(() => expect(screen.getByTitle('page.html').getAttribute('srcdoc')).toContain('server-b'))
+    expect(screen.getByTitle('page.html').getAttribute('srcdoc')).not.toContain('server-a')
   })
 })

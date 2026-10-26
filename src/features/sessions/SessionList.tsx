@@ -384,6 +384,7 @@ export interface SessionListItemProps {
   showDirectory?: boolean
   /** 活跃标记查询用复合 key（serverId::sessionId，多服务器模式传入；缺省用 session.id） */
   activeSessionKey?: string
+  showPinAction?: boolean
   // ---- 编辑模式 ----
   isEditMode?: boolean
   isChecked?: boolean
@@ -405,6 +406,7 @@ export function SessionListItem({
   showStats = true,
   showDirectory = false,
   activeSessionKey,
+  showPinAction = true,
   isEditMode = false,
   isChecked = false,
   checkedPrev = false,
@@ -726,7 +728,7 @@ export function SessionListItem({
                 : 'opacity-0 group-hover:opacity-100 peer-focus-visible:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto peer-focus-visible:pointer-events-auto focus-within:pointer-events-auto'
             }`}
           >
-            <button
+            {showPinAction && <button
               type="button"
               onClick={handlePin}
               className={`p-1 rounded transition-colors focus-visible:ring-1 focus-visible:ring-border-200 focus-visible:ring-inset ${
@@ -738,7 +740,7 @@ export function SessionListItem({
               aria-label={isPinned ? t('sessions.unpin') : t('sessions.pin')}
             >
               <PinIcon className="w-3 h-3" />
-            </button>
+            </button>}
             <button
               type="button"
               onClick={handleStartEdit}
@@ -874,7 +876,7 @@ export function SessionListItem({
               : 'opacity-0 group-hover:opacity-100 peer-focus-visible:opacity-100 focus-within:opacity-100 pointer-events-none group-hover:pointer-events-auto peer-focus-visible:pointer-events-auto focus-within:pointer-events-auto'
           }`}
         >
-          <button
+          {showPinAction && <button
             type="button"
             onClick={handlePin}
             className={`p-1.5 rounded-md transition-colors focus-visible:ring-1 focus-visible:ring-border-200 focus-visible:ring-inset ${
@@ -886,7 +888,7 @@ export function SessionListItem({
             aria-label={isPinned ? t('sessions.unpin') : t('sessions.pin')}
           >
             <PinIcon className="w-3.5 h-3.5" />
-          </button>
+          </button>}
           <button
             type="button"
             onClick={handleStartEdit}

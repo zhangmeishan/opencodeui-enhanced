@@ -6,7 +6,7 @@
 // 设计原则：
 // 1. 前端内部存储：统一使用正斜杠 (URL友好，跨平台)
 // 2. 后端 API 请求：根据 pathMode 决定用正斜杠还是反斜杠
-// 3. 路径比较：统一规范化后比较（正斜杠 + 小写 + 无末尾斜杠）
+// 3. 路径比较：Unix 保留大小写，Windows 盘符/UNC 路径忽略大小写
 //
 
 import { serverStorage } from './perServerStorage'
@@ -230,26 +230,25 @@ export function autoDetectPathStyle(path: string | undefined | null, serverId?: 
  */
 export function normalizeToForwardSlash(dir: string | undefined | null): string {
   if (!dir) return ''
-  return dir
-    .replace(/\\/g, '/') // 反斜杠 → 正斜杠
-    .replace(/\/+$/, '') // 移除末尾斜杠
+  const slashed = dir.replace(/\\/g, '/')
+  if (/^\/+$/u.test(slashed)) return '/'
+  if (/^[a-z]:\/+$/i.test(slashed)) return `${slashed.slice(0, 2)}/`
+  return slashed.replace(/\/+$/, '')
 }
 
 /**
  * 规范化目录路径用于比较
  * - 统一使用正斜杠
  * - 移除末尾斜杠
- * - 转小写（Windows 路径不区分大小写）
+ * - Windows 盘符/UNC 路径转小写，Unix 路径保持大小写
  *
  * @example
  * normalizeForComparison('E:\\Dev\\Project') // 'e:/dev/project'
  */
 export function normalizeForComparison(dir: string | undefined | null): string {
   if (!dir) return ''
-  return dir
-    .replace(/\\/g, '/') // 反斜杠 → 正斜杠
-    .replace(/\/+$/, '') // 移除末尾斜杠
-    .toLowerCase() // Windows 路径不区分大小写
+  const normalized = normalizeToForwardSlash(dir)
+  return /^[a-z]:/i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized
 }
 
 /**

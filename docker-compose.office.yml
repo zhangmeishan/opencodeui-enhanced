@@ -1,0 +1,68 @@
+# Independent optional services. Does not recreate the existing frontend/OpenCode services.
+# docker compose --env-file .env.office -f docker-compose.office.yml up -d --build
+name: opencodeui-office
+services:
+  onlyoffice:
+    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:10.0.0}
+    restart: unless-stopped
+    ports:
+      # Host reverse-proxy upstream 18092 -> official container HTTP listener 80.
+      - '${OFFICE_BIND_ADDRESS:-127.0.0.1}:${ONLYOFFICE_PORT:-18092}:80'
+    environment:
+      JWT_ENABLED: 'true'
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?Set ONLYOFFICE_JWT_SECRET in .env.office}
+      JWT_HEADER: Authorization
+      # Document Server must retrieve signed URLs from the private bridge container.
+      ALLOW_PRIVATE_IP_ADDRESS: 'true'
+      ALLOW_META_IP_ADDRESS: 'false'
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-lib:/var/lib/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
+      - onlyoffice-logs:/var/log/onlyoffice
+    shm_size: 256m
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost/healthcheck']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+  office-bridge:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.office-bridge
+    restart: unless-stopped
+    ports:
+      - '${OFFICE_BIND_ADDRESS:-127.0.0.1}:${OFFICE_BRIDGE_PORT:-18093}:8093'
+    environment:
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?Set ONLYOFFICE_JWT_SECRET}
+      # Optional Basic login. Also change the mapping's auth from none to basic.
+      # OFFICE_MAIN_USERNAME: ${OFFICE_MAIN_USERNAME}
+      # OFFICE_MAIN_PASSWORD: ${OFFICE_MAIN_PASSWORD}
+      # OFFICE_SECOND_USERNAME: ${OFFICE_SECOND_USERNAME}
+      # OFFICE_SECOND_PASSWORD: ${OFFICE_SECOND_PASSWORD}
+    volumes:
+      - ./office-bridge/config.json:/config/config.json:ro
+      # A service's remote paths are resolved only within its own mounted roots.
+      - type: bind
+        source: ${OFFICE_MAIN_PROJECTS_PATH:?Set OFFICE_MAIN_PROJECTS_PATH}
+        target: /projects/service-a
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OFFICE_SECOND_PROJECTS_PATH:?Set OFFICE_SECOND_PROJECTS_PATH}
+        target: /projects/service-b
+        bind:
+          create_host_path: false
+      - office-bridge-data:/data
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:8093/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  onlyoffice-data:
+  onlyoffice-lib:
+  onlyoffice-db:
+  onlyoffice-logs:
+  office-bridge-data:

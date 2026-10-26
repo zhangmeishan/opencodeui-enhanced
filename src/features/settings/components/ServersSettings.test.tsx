@@ -23,6 +23,9 @@ vi.mock('../../../hooks', () => ({
 vi.mock('../../../store', () => ({
   messageStore: { clearSession: clearSessionMock },
 }))
+const { resetPanes, activateScope } = vi.hoisted(() => ({ resetPanes: vi.fn(), activateScope: vi.fn() }))
+vi.mock('../../../store/paneLayoutStore', () => ({ paneLayoutStore: { reset: resetPanes } }))
+vi.mock('../../../store/layoutStore', () => ({ layoutStore: { activateServerScope: activateScope } }))
 
 const localServer = { id: 'local', name: 'Local', url: 'http://127.0.0.1:4096', isDefault: true }
 const remoteServer = { id: 'remote', name: 'Remote', url: 'http://remote.test' }
@@ -61,6 +64,9 @@ describe('ServersSettings', () => {
     })
     expect(setActiveServerMock).toHaveBeenCalledWith('remote')
     expect(navigateHomeMock).toHaveBeenCalled()
+    expect(navigateHomeMock).toHaveBeenCalledWith('remote')
+    expect(resetPanes).toHaveBeenCalled()
+    expect(activateScope).toHaveBeenCalledWith('remote')
     expect(clearSessionMock).toHaveBeenCalledWith('session-1')
   })
 })

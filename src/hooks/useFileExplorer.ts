@@ -3,13 +3,18 @@
 // 管理文件树状态、展开/折叠、文件预览
 // ============================================
 
-import { useState, useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { listDirectory, getFileContent, getFileStatus, getSessionDiff, getLastTurnDiff, getVcsDiff } from '../api'
 import type { FileNode, FileContent, FileStatusItem, FileDiff } from '../api/types'
 import { useSessionChangeScope } from '../store/changeScopeStore'
 import { activeSessionStore } from '../store/activeSessionStore'
 import { useAutoRefresh } from './useAutoRefresh'
+import { bytesToBase64, getFileMime, needsOriginalFilePreview, validateImagePreview } from '../utils/filePreview'
+import { serverStore } from '../store/serverStore'
+import { verifiedPreview, readVerifiedFile } from '../api/previewCache'
+import { BINARY_PREVIEW_BYTES } from '../utils/previewLimits'
+import { isProjectFilePath, isWithinWorkspace } from '../utils/workspaceBoundary'
 
 export interface FileTreeNode extends FileNode {
   children?: FileTreeNode[]
@@ -18,6 +23,7 @@ export interface FileTreeNode extends FileNode {
 }
 
 export interface UseFileExplorerOptions {
+  projectRoot?: string | null
   directory?: string
   autoLoad?: boolean
   sessionId?: string
@@ -43,7 +49,7 @@ export interface UseFileExplorerResult {
   previewContent: FileContent | null
   previewLoading: boolean
   previewError: string | null
-  loadPreview: (path: string) => Promise<void>
+  loadPreview: (path: string, reload?: boolean) => Promise<void>
   clearPreview: () => void
 
   // 文件状态
@@ -56,7 +62,7 @@ export interface UseFileExplorerResult {
 }
 
 export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileExplorerResult {
-  const { directory, autoLoad = true, sessionId, serverId, consumerId = 'file-explorer' } = options
+  const { directory, autoLoad = true, sessionId, serverId, projectRoot, consumerId = 'file-explorer' } = options
   const { t } = useTranslation(['components'])
   const changeMode = useSessionChangeScope(sessionId ?? null)
 
@@ -67,9 +73,14 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     () => (sessionId ? activeSessionStore.getSessionMeta(sessionId)?.directory : undefined),
     () => (sessionId ? activeSessionStore.getSessionMeta(sessionId)?.directory : undefined),
   )
-  const effectiveDirectory = sessionId && sessionDirectory ? sessionDirectory : directory
-  const directoryRef = useRef(effectiveDirectory)
-  directoryRef.current = effectiveDirectory
+  const candidateDirectory = sessionId && sessionDirectory ? sessionDirectory : directory
+  const effectiveDirectory =
+    projectRoot === undefined || isWithinWorkspace(candidateDirectory, projectRoot || undefined)
+      ? candidateDirectory
+      : undefined
+  const scopeKey = `${serverId ?? ''}\0${effectiveDirectory ?? ''}`
+  const directoryRef = useRef(scopeKey)
+  directoryRef.current = scopeKey
 
   // 文件树状态
   const [tree, setTree] = useState<FileTreeNode[]>([])
@@ -84,8 +95,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const [previewContent, setPreviewContent] = useState<FileContent | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
-  const previewCacheRef = useRef<Map<string, FileContent>>(new Map())
   const previewLoadIdRef = useRef(0)
+  const activePreviewPathRef = useRef<string | null>(null)
+  const previewAbortRef = useRef<AbortController | null>(null)
 
   // 文件状态（git）
   const [fileStatus, setFileStatus] = useState<Map<string, FileStatusItem>>(new Map())
@@ -107,21 +119,26 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       const nodes = await listDirectory('', effectiveDirectory, serverId)
 
       // 检查请求是否过时
-      if (loadId !== loadIdRef.current) return
+      if (loadId !== loadIdRef.current || directoryRef.current !== scopeKey) return
 
       // 排序：目录在前，文件在后，按名称排序
-      const sorted = sortNodes(nodes)
+      const sorted = sortNodes(
+        nodes.filter(
+          node =>
+            isProjectFilePath(node.path, effectiveDirectory) && isWithinWorkspace(node.absolute, effectiveDirectory),
+        ),
+      )
       setTree(sorted.map(n => ({ ...n, children: n.type === 'directory' ? undefined : undefined })))
     } catch (e) {
-      if (loadId === loadIdRef.current) {
+      if (loadId === loadIdRef.current && directoryRef.current === scopeKey) {
         setError(e instanceof Error ? e.message : t('fileExplorer.failedToLoadFiles'))
       }
     } finally {
-      if (loadId === loadIdRef.current) {
+      if (loadId === loadIdRef.current && directoryRef.current === scopeKey) {
         setIsLoading(false)
       }
     }
-  }, [effectiveDirectory, serverId, t])
+  }, [effectiveDirectory, serverId, t, scopeKey])
 
   const loadStatuses = useCallback(async () => {
     if (!effectiveDirectory) {
@@ -135,7 +152,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     try {
       if (!sessionId) {
         const status = await getFileStatus(effectiveDirectory, serverId)
-        if (loadId !== statusLoadIdRef.current) return
+        if (loadId !== statusLoadIdRef.current || directoryRef.current !== scopeKey) return
 
         status.forEach(item => {
           const normalized = normalizePath(item.path)
@@ -150,7 +167,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
               ? await getLastTurnDiff(sessionId, effectiveDirectory, serverId)
               : await getSessionDiff(sessionId, effectiveDirectory, serverId)
 
-        if (loadId !== statusLoadIdRef.current) return
+        if (loadId !== statusLoadIdRef.current || directoryRef.current !== scopeKey) return
 
         diffs.forEach(diff => {
           const normalized = normalizePath(diff.file)
@@ -166,21 +183,21 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       computeDirectoryStatus(statusMap)
       setFileStatus(statusMap)
     } catch {
-      if (loadId !== statusLoadIdRef.current) return
+      if (loadId !== statusLoadIdRef.current || directoryRef.current !== scopeKey) return
       setFileStatus(new Map())
     }
-  }, [changeMode, effectiveDirectory, sessionId, serverId])
+  }, [changeMode, effectiveDirectory, sessionId, serverId, scopeKey])
 
   // 加载子目录
   const loadChildren = useCallback(
     async (parentPath: string) => {
-      if (!effectiveDirectory) return
+      if (!effectiveDirectory || !isProjectFilePath(parentPath, effectiveDirectory)) return
 
-      const loadKey = `${effectiveDirectory}\0${parentPath}`
+      const loadKey = `${scopeKey}\0${parentPath}`
       const loadId = (childLoadIdsRef.current.get(loadKey) ?? 0) + 1
       childLoadIdsRef.current.set(loadKey, loadId)
 
-      const isCurrentLoad = () => directoryRef.current === effectiveDirectory && childLoadIdsRef.current.get(loadKey) === loadId
+      const isCurrentLoad = () => directoryRef.current === scopeKey && childLoadIdsRef.current.get(loadKey) === loadId
 
       // 更新树，标记为加载中
       setTree(prev =>
@@ -194,7 +211,12 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
         const nodes = await listDirectory(parentPath, effectiveDirectory, serverId)
         if (!isCurrentLoad()) return
 
-        const sorted = sortNodes(nodes)
+        const sorted = sortNodes(
+          nodes.filter(
+            node =>
+              isProjectFilePath(node.path, effectiveDirectory) && isWithinWorkspace(node.absolute, effectiveDirectory),
+          ),
+        )
 
         setTree(prev =>
           updateTreeNode(prev, parentPath, node => ({
@@ -217,7 +239,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
         )
       }
     },
-    [effectiveDirectory, serverId],
+    [effectiveDirectory, serverId, scopeKey],
   )
 
   const updateExpandedPaths = useCallback(
@@ -225,12 +247,12 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       setExpandedPaths(prev => {
         const next = updater(prev)
         if (effectiveDirectory) {
-          expandedPathsByDirectoryRef.current.set(effectiveDirectory, new Set(next))
+          expandedPathsByDirectoryRef.current.set(scopeKey, new Set(next))
         }
         return next
       })
     },
-    [effectiveDirectory],
+    [effectiveDirectory, scopeKey],
   )
 
   // 切换展开/折叠
@@ -269,68 +291,114 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     [tree, loadChildren, updateExpandedPaths],
   )
 
-  const collapsePath = useCallback((path: string) => {
-    updateExpandedPaths(prev => {
-      const next = new Set(prev)
-      next.delete(path)
-      return next
-    })
-  }, [updateExpandedPaths])
+  const collapsePath = useCallback(
+    (path: string) => {
+      updateExpandedPaths(prev => {
+        const next = new Set(prev)
+        next.delete(path)
+        return next
+      })
+    },
+    [updateExpandedPaths],
+  )
 
   // 加载文件预览
   const loadPreview = useCallback(
-    async (path: string) => {
+    async (path: string, reload = false) => {
       if (!effectiveDirectory) return
 
       const loadId = ++previewLoadIdRef.current
+      activePreviewPathRef.current = path
+      previewAbortRef.current?.abort()
+      const controller = new AbortController()
+      previewAbortRef.current = controller
 
       setPreviewLoading(true)
       setPreviewError(null)
 
-      const cached = previewCacheRef.current.get(path)
-      if (cached) {
-        if (loadId === previewLoadIdRef.current) {
-          setPreviewContent(cached)
-          setPreviewLoading(false)
-        }
-        return
-      }
+      setPreviewContent(null)
 
       try {
-        const content = await getFileContent(path, effectiveDirectory, serverId)
-        if (loadId !== previewLoadIdRef.current) return
-        previewCacheRef.current.set(path, content)
+        if (!isProjectFilePath(path, effectiveDirectory)) throw new Error(t('fileExplorer.outsideProject'))
+        // Native image reads avoid the PTY/base64 round trip for ordinary PNGs.
+        const nativeImage = /\.(?:png|jpe?g|gif|webp|bmp|avif|ico)$/i.test(path)
+        const content: FileContent =
+          needsOriginalFilePreview(path) && !nativeImage
+            ? {
+                type: 'binary',
+                content: bytesToBase64(
+                  await readVerifiedFile(path, effectiveDirectory, serverId ?? serverStore.getActiveServerId(), {
+                    signal: controller.signal,
+                    maxBytes: BINARY_PREVIEW_BYTES,
+                    reload,
+                  }),
+                ),
+                encoding: 'base64',
+                mimeType: getFileMime(path),
+              }
+            : await verifiedPreview({
+                path,
+                directory: effectiveDirectory,
+                serverId: serverId ?? serverStore.getActiveServerId(),
+                variant: 'native-preview',
+                diskKind: 'file-content',
+                reload,
+                signal: controller.signal,
+                load: async () => {
+                  const value = await getFileContent(path, effectiveDirectory, serverId)
+                  if (value.content.length > Math.ceil(BINARY_PREVIEW_BYTES / 3) * 4)
+                    throw new Error(t('fileExplorer.previewTooLarge'))
+                  if (nativeImage && value.encoding === 'base64') validateImagePreview(value.content, path)
+                  return value
+                },
+                size: value => value.content.length * 2,
+              })
+        if (content.content.length > Math.ceil(BINARY_PREVIEW_BYTES / 3) * 4)
+          throw new Error(t('fileExplorer.previewTooLarge'))
+        if (nativeImage && content.encoding === 'base64' && !content.mimeType) content.mimeType = getFileMime(path)
+        if (nativeImage && content.encoding === 'base64') validateImagePreview(content.content, path)
+        if (loadId !== previewLoadIdRef.current || directoryRef.current !== scopeKey) return
         setPreviewContent(content)
       } catch (e) {
-        if (loadId !== previewLoadIdRef.current) return
+        if (loadId !== previewLoadIdRef.current || directoryRef.current !== scopeKey) return
         setPreviewError(e instanceof Error ? e.message : t('fileExplorer.failedToLoadFile'))
         setPreviewContent(null)
       } finally {
-        if (loadId === previewLoadIdRef.current) {
+        if (loadId === previewLoadIdRef.current && directoryRef.current === scopeKey) {
           setPreviewLoading(false)
         }
       }
     },
-    [effectiveDirectory, t, serverId],
+    [effectiveDirectory, t, serverId, scopeKey],
   )
 
   const clearPreview = useCallback(() => {
+    activePreviewPathRef.current = null
+    previewAbortRef.current?.abort()
     previewLoadIdRef.current += 1
     setPreviewContent(null)
     setPreviewError(null)
     setPreviewLoading(false)
   }, [])
 
+  useEffect(() => {
+    const revalidate = () => {
+      if (activePreviewPathRef.current) void loadPreview(activePreviewPathRef.current)
+    }
+    window.addEventListener('focus', revalidate)
+    return () => window.removeEventListener('focus', revalidate)
+  }, [loadPreview])
+
   // 刷新
   const refresh = useCallback(async () => {
     if (effectiveDirectory) {
-      expandedPathsByDirectoryRef.current.delete(effectiveDirectory)
+      expandedPathsByDirectoryRef.current.delete(scopeKey)
     }
     setExpandedPaths(new Set())
-    previewCacheRef.current.clear()
+    previewLoadIdRef.current++
     setPreviewContent(null)
     await Promise.all([loadRoot(), loadStatuses()])
-  }, [effectiveDirectory, loadRoot, loadStatuses])
+  }, [effectiveDirectory, loadRoot, loadStatuses, scopeKey])
 
   // 软刷新：重新加载根目录和状态，但保留展开路径和预览
   const softRefresh = useCallback(async () => {
@@ -338,9 +406,22 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   }, [loadRoot, loadStatuses])
 
   // 自动刷新：session idle / 窗口聚焦 / SSE 重连
-  useAutoRefresh(consumerId, sessionId ?? null, softRefresh, !!effectiveDirectory)
+  useAutoRefresh(consumerId, sessionId ?? null, softRefresh, autoLoad && !!effectiveDirectory)
 
   // 初始加载
+  const invalidateTreeRequests = useCallback(() => {
+    childLoadIdsRef.current.clear()
+    loadIdRef.current++
+    statusLoadIdRef.current++
+  }, [])
+  useLayoutEffect(() => {
+    setTree([])
+    setFileStatus(new Map())
+    setError(null)
+    invalidateTreeRequests()
+    return invalidateTreeRequests
+  }, [scopeKey, invalidateTreeRequests])
+
   useEffect(() => {
     if (autoLoad && effectiveDirectory) {
       loadRoot()
@@ -359,9 +440,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       return
     }
 
-    const storedPaths = expandedPathsByDirectoryRef.current.get(effectiveDirectory)
+    const storedPaths = expandedPathsByDirectoryRef.current.get(scopeKey)
     setExpandedPaths(storedPaths ? new Set(storedPaths) : new Set())
-  }, [effectiveDirectory])
+  }, [effectiveDirectory, scopeKey])
 
   useEffect(() => {
     if (!effectiveDirectory || tree.length === 0 || expandedPaths.size === 0) return
@@ -374,12 +455,16 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     })
   }, [effectiveDirectory, expandedPaths, loadChildren, tree])
 
-  useEffect(() => {
-    previewCacheRef.current.clear()
+  useLayoutEffect(() => {
+    activePreviewPathRef.current = null
     previewLoadIdRef.current += 1
     setPreviewContent(null)
     setPreviewError(null)
     setPreviewLoading(false)
+    return () => {
+      previewLoadIdRef.current++
+      previewAbortRef.current?.abort()
+    }
   }, [effectiveDirectory, sessionId, serverId])
 
   return {

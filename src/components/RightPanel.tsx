@@ -258,13 +258,14 @@ const FilesContent = memo(function FilesContent({
         <div key={tab.id} className={tab.id === activeTab.id ? 'h-full' : 'hidden'}>
           <FileExplorer
             panelTabId={tab.id}
-            directory={directory}
-            serverId={serverId}
+            mode="preview"
+            directory={tab.previewFile?.directory ?? directory}
+            serverId={tab.previewFile?.serverId ?? serverId}
             previewFile={tab.previewFile ?? null}
             previewFiles={tab.previewFiles ?? []}
             position="right"
             isPanelResizing={isPanelResizing}
-            sessionId={sessionId}
+            sessionId={tab.previewFile?.directory ? undefined : sessionId}
           />
         </div>
       ))}

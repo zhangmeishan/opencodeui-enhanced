@@ -44,6 +44,8 @@ export function extToMime(ext: string): string {
     jpeg: 'image/jpeg',
     gif: 'image/gif',
     webp: 'image/webp',
+    avif: 'image/avif',
+    ico: 'image/x-icon',
     bmp: 'image/bmp',
     svg: 'image/svg+xml',
     // pdf

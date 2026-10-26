@@ -501,9 +501,9 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     if (!fileContextMenu) return
     const file = fileContextMenu.file
     const name = file.split(/[/\\]/).pop() || file
-    layoutStore.openFilePreview({ path: file, name }, position)
+    layoutStore.openFilePreview({ path: file, name, directory, serverId }, position)
     setFileContextMenu(null)
-  }, [fileContextMenu, position])
+  }, [fileContextMenu, position, directory, serverId])
 
   useEffect(() => {
     if (!fileContextMenu) return

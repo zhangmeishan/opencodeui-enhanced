@@ -8,6 +8,10 @@ import { AttachmentDetailModal } from './AttachmentDetailModal'
 import { clipboardErrorHandler, copyTextToClipboard } from '../../utils'
 import { canDownloadAttachment, useFileDownload } from './useFileDownload'
 import type { Attachment } from './types'
+import { TransferProgressBar } from '../../components/TransferProgressBar'
+import { useChatFileActions } from './useChatFileActions'
+import { getFileLinkPath } from '../../utils/fileLinks'
+import { useSessionNavigation } from '../../contexts/SessionNavigationContext'
 
 interface AttachmentItemProps {
   attachment: Attachment
@@ -29,9 +33,20 @@ function AttachmentItemComponent({
   const [imageError, setImageError] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const shouldRenderBody = useDelayedRender(isExpanded)
+  const fileActions = useChatFileActions()
+  const { currentSessionId } = useSessionNavigation()
+  const localFile =
+    !onRemove && currentSessionId && attachment.type === 'file' && getFileLinkPath(attachment.url)
+      ? attachment.url
+      : undefined
 
   const { Icon, colorClass } = getAttachmentIcon(attachment)
-  const canExpand = expandable && hasExpandableContent(attachment)
+  const reference = attachment.contextReference
+  const canExpand = (expandable || !!reference) && hasExpandableContent(attachment)
+  const range = reference?.range
+  const location = range
+    ? `L${range.startLine}:C${range.startColumn}–L${range.endLine}:C${range.endColumn}`
+    : reference?.location
 
   // file/folder 使用 material icon，其他类型用通用 SVG 图标
   const useMaterialIcon = attachment.type === 'file' || attachment.type === 'folder'
@@ -63,7 +78,35 @@ function AttachmentItemComponent({
           ${size === 'sm' ? 'text-[length:var(--fs-sm)]' : 'text-[length:var(--fs-base)]'}
           ${canExpand ? 'cursor-pointer hover:bg-bg-200 transition-colors' : ''}
         `}
-        onClick={canExpand ? () => setIsExpanded(!isExpanded) : undefined}
+        role={localFile || canExpand ? 'button' : undefined}
+        tabIndex={localFile || canExpand ? 0 : undefined}
+        aria-expanded={canExpand && !localFile ? isExpanded : undefined}
+        aria-label={
+          reference
+            ? `${t(reference.kind === 'selection' ? 'components:fileExplorer.selectionReference' : 'components:fileExplorer.fileReference')} ${attachment.displayName}${location ? ` ${location}` : ''}`
+            : undefined
+        }
+        onClick={
+          localFile
+            ? () => {
+                void fileActions.open(localFile)
+              }
+            : canExpand
+              ? () => setIsExpanded(!isExpanded)
+              : undefined
+        }
+        onKeyDown={
+          localFile || canExpand
+            ? event => {
+                if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                  event.preventDefault()
+                  if (localFile) void fileActions.open(localFile)
+                  else setIsExpanded(!isExpanded)
+                }
+              }
+            : undefined
+        }
+        onContextMenu={localFile ? event => fileActions.contextMenu(event, localFile) : undefined}
       >
         {materialIconUrl ? (
           <img
@@ -85,13 +128,34 @@ function AttachmentItemComponent({
             <Icon />
           </span>
         )}
-        <span className="text-text-200 flex-1 min-w-0 truncate text-left" title={attachment.displayName}>
-          {attachment.displayName}
+        <span
+          className="text-text-200 flex-1 min-w-0 text-left"
+          title={attachment.relativePath || attachment.displayName}
+        >
+          {reference && (
+            <span className="sr-only">
+              {t(
+                reference.kind === 'selection'
+                  ? 'components:fileExplorer.selectionReference'
+                  : 'components:fileExplorer.fileReference',
+              )}
+            </span>
+          )}
+          <span className="block truncate">{attachment.displayName}</span>
+          {location && !range && <span className="sr-only">{location}</span>}
         </span>
         {canExpand && (
-          <span className={`text-text-400 transition-transform duration-300 ${isExpanded ? '' : '-rotate-90'}`}>
+          <button
+            type="button"
+            aria-label={t('attachment.viewDetail')}
+            onClick={event => {
+              event.stopPropagation()
+              setIsExpanded(!isExpanded)
+            }}
+            className={`text-text-400 transition-transform duration-300 ${isExpanded ? '' : '-rotate-90'}`}
+          >
             <ChevronDownIcon size={10} />
-          </span>
+          </button>
         )}
         {onRemove && (
           <button
@@ -129,6 +193,7 @@ function AttachmentItemComponent({
 
       {/* 附件详情弹窗 */}
       <AttachmentDetailModal attachment={attachment} isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />
+      {fileActions.controls}
     </div>
   )
 }
@@ -284,7 +349,7 @@ interface ActionBarProps {
 function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, showBorderTop }: ActionBarProps) {
   const { t } = useTranslation(['commands', 'common'])
   const [copied, setCopied] = useState(false)
-  const { download, isDownloading, error } = useFileDownload()
+  const { download, isDownloading, error, progress } = useFileDownload()
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -327,7 +392,8 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
 
   if (!hasContent && !hasDownloadable) return null
 
-  const btnBase = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[length:var(--fs-xxs)] transition-colors duration-150'
+  const btnBase =
+    'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[length:var(--fs-xxs)] transition-colors duration-150'
 
   return (
     <div
@@ -364,7 +430,16 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
           <span>{t('common:save')}</span>
         </button>
       )}
-      {error && <span role="alert" className="text-danger-100">{t('attachment.downloadFailed')}</span>}
+      {error && (
+        <span role="alert" className="text-danger-100">
+          {t('attachment.downloadFailed')}
+        </span>
+      )}
+      {progress && (
+        <div className="basis-full min-w-0">
+          <TransferProgressBar progress={progress} label={`${t('common:download')} ${attachment.displayName}`} />
+        </div>
+      )}
     </div>
   )
 }

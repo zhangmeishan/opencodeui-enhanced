@@ -88,6 +88,8 @@
     "changePermissionSettings": "Always allow is handled by the backend. You can change this in settings."
   },
   "projectDialog": {
+    "outsideWorkspace": "Choose a directory within this server's working directory.",
+    "rootUnavailable": "The server's working directory could not be loaded. Check the connection and try again.",
     "typePath": "Type path...",
     "parent": ".. (Parent)",
     "noMatchingFolders": "No matching folders",
@@ -122,6 +124,7 @@
     "redoAll": "Redo All"
   },
   "sidebar": {
+    "files": "Files",
     "allProjects": "All projects",
     "global": "Global",
     "globalProjectHint": "Non-Git workspace, usually where opencode started",
@@ -131,7 +134,7 @@
     "addProject": "Add project...",
     "searchChats": "Search chats...",
     "clearSearch": "Clear search",
-    "recents": "Recents",
+    "recents": "Sessions",
     "active": "Active",
     "noActiveSessions": "No active sessions",
     "notifications": "Notifications",

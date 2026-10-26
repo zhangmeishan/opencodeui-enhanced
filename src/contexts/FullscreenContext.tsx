@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FullscreenViewer } from '../components/FullscreenViewer'
 import { FullscreenContext, type FullscreenLayer } from './FullscreenContext.shared'
+import { layoutStore } from '../store/layoutStore'
 
 export function FullscreenProvider({ children }: { children: ReactNode }) {
   const [layer, setLayer] = useState<FullscreenLayer | null>(null)
   const [isOpen, setIsOpen] = useState(false)
   const layerRef = useRef<FullscreenLayer | null>(null)
   const closeTimerRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current === null) return
@@ -16,6 +18,7 @@ export function FullscreenProvider({ children }: { children: ReactNode }) {
 
   const openFullscreen = useCallback(
     (nextLayer: FullscreenLayer) => {
+      if (!mountedRef.current) return
       clearCloseTimer()
       setLayer(nextLayer)
       setIsOpen(true)
@@ -24,11 +27,13 @@ export function FullscreenProvider({ children }: { children: ReactNode }) {
   )
 
   const updateFullscreen = useCallback((nextLayer: FullscreenLayer) => {
+    if (!mountedRef.current) return
     setLayer(current => (current?.id === nextLayer.id ? nextLayer : current))
   }, [])
 
   const closeFullscreen = useCallback(
     (id?: string) => {
+      if (!mountedRef.current) return
       const current = layerRef.current
       if (!current || (id && current.id !== id)) return
 
@@ -54,6 +59,22 @@ export function FullscreenProvider({ children }: { children: ReactNode }) {
   }, [layer])
 
   useEffect(() => clearCloseTimer, [clearCloseTimer])
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false; clearCloseTimer() }
+  }, [clearCloseTimer])
+  useLayoutEffect(() => {
+    let scope = layoutStore.getServerScope()
+    return layoutStore.subscribe(() => {
+      const next = layoutStore.getServerScope()
+      if (next === scope) return
+      scope = next
+      clearCloseTimer()
+      layerRef.current = null
+      setLayer(null)
+      setIsOpen(false)
+    })
+  }, [clearCloseTimer])
 
   const value = useMemo(
     () => ({

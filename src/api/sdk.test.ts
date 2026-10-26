@@ -74,14 +74,31 @@ describe('sdk request lifecycle', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('rebuilds a cached client after cancellation even when the server URL and auth stay unchanged', async () => {
+    const { abortInFlightApiRequests, getSDKClient } = await import('./sdk')
+    const stale = getSDKClient() as unknown as MockClient
+    abortInFlightApiRequests('Another server changed')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'))
+    const fresh = getSDKClient() as unknown as MockClient
+    expect(fresh).not.toBe(stale)
+    await expect(fresh.config.fetch('http://127.0.0.1:4096/session')).resolves.toBeInstanceOf(Response)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    await expect(stale.config.fetch('http://127.0.0.1:4096/session')).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('honors the abort signal carried on the SDK Request object', async () => {
     const { getSDKClient } = await import('./sdk')
     const controller = new AbortController()
-    vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => new Promise((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
-    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        }),
+    )
     const client = getSDKClient() as unknown as MockClient
-    const request = client.config.fetch(new Request('http://127.0.0.1:4096/session/test/prompt_async', { method: 'POST', signal: controller.signal }))
+    const request = client.config.fetch(
+      new Request('http://127.0.0.1:4096/session/test/prompt_async', { method: 'POST', signal: controller.signal }),
+    )
     controller.abort(new DOMException('Message submission timed out', 'TimeoutError'))
     await expect(request).rejects.toMatchObject({ name: 'TimeoutError' })
   })
@@ -91,10 +108,12 @@ describe('sdk request lifecycle', () => {
     await i18n.changeLanguage(language)
     try {
       const { getSDKClient } = await import('./sdk')
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>413 Request Entity Too Large</html>', {
-        status: 413,
-        headers: { 'content-type': 'text/html' },
-      }))
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('<html>413 Request Entity Too Large</html>', {
+          status: 413,
+          headers: { 'content-type': 'text/html' },
+        }),
+      )
       const client = getSDKClient() as unknown as MockClient
       await expect(client.config.fetch('http://127.0.0.1:4096/session/test/prompt_async')).rejects.toThrow(
         i18n.t('common:errors.requestTooLarge'),

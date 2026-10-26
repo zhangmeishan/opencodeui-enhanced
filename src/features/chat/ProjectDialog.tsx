@@ -5,6 +5,7 @@ import { listDirectory, getPath } from '../../api'
 import { fileErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import { Dialog } from '../../components/ui/Dialog'
+import { isWithinWorkspace, normalizeWorkspacePath } from '../../utils/workspaceBoundary'
 
 // ============================================
 // Types
@@ -69,6 +70,8 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [rootScope, setRootScope] = useState<{ serverId?: string; root: string } | null>(null)
+  const workspaceRoot = rootScope?.serverId === serverId ? rootScope?.root || '' : ''
 
   // Refs
   const loadedPathRef = useRef<string>('')
@@ -80,6 +83,8 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
   // Computed
   const currentDir = useMemo(() => getDirectoryPath(inputValue), [inputValue])
   const filterText = useMemo(() => getFilterText(inputValue), [inputValue])
+  const inBounds = isWithinWorkspace(inputValue, workspaceRoot)
+  const canGoUp = isWithinWorkspace(currentDir, workspaceRoot) && normalizeWorkspacePath(currentDir) !== normalizeWorkspacePath(workspaceRoot)
 
   const filteredItems = useMemo(() => {
     if (!filterText) return items
@@ -99,19 +104,22 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
     const timer = window.setTimeout(() => {
       loadedPathRef.current = ''
       setItems([])
+      setRootScope(null)
+      setInputValue('')
 
       const initPath = async () => {
-        let path = initialPath
-        if (!path) {
-          try {
-            const p = await getPath(serverId)
-            path = p.home
-          } catch {
-            /* ignore */
-          }
+        let path = ''
+        try {
+          const p = await getPath(serverId)
+          if (cancelled) return
+          if (!normalizeWorkspacePath(p.directory)) throw new Error(t('projectDialog.rootUnavailable'))
+          setRootScope({ serverId, root: p.directory })
+          path = isWithinWorkspace(initialPath, p.directory) ? initialPath : p.directory
+          setError(null)
+        } catch {
+          if (!cancelled) setError(t('projectDialog.rootUnavailable'))
+          return
         }
-
-        if (cancelled) return
 
         path = normalizePath(path)
         if (!path.endsWith(PATH_SEP)) path += PATH_SEP
@@ -128,14 +136,14 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
       cancelled = true
       clearTimeout(timer)
     }
-  }, [isOpen, initialPath, serverId])
+  }, [isOpen, initialPath, serverId, t])
 
   // ==========================================
   // Load Directory
   // ==========================================
 
   useEffect(() => {
-    if (!isOpen || !currentDir) return
+    if (!isOpen || !currentDir || !workspaceRoot || !isWithinWorkspace(currentDir, workspaceRoot)) return
     // 目录变化时始终重新加载
     if (currentDir === loadedPathRef.current) return
 
@@ -150,7 +158,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
           if (cancelled || requestId !== requestIdRef.current) return
 
           const fileItems = nodes
-            .filter(n => n.type === 'directory')
+            .filter(n => n.type === 'directory' && isWithinWorkspace(n.absolute, workspaceRoot))
             .sort((a, b) => a.name.localeCompare(b.name))
             .map(n => ({
               name: n.name,
@@ -187,7 +195,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
       cancelled = true
       clearTimeout(timer)
     }
-  }, [isOpen, currentDir, serverId])
+  }, [isOpen, currentDir, serverId, workspaceRoot])
 
   // ==========================================
   // Scroll to Selection
@@ -208,6 +216,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
   // ==========================================
 
   const handleGoBack = useCallback(() => {
+    if (!canGoUp) return
     let current = inputValue
     if (!current.endsWith(PATH_SEP)) {
       current = getDirectoryPath(current)
@@ -221,7 +230,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
       if (folderName) pendingSelectionRef.current = folderName
       setInputValue(parent)
     }
-  }, [inputValue])
+  }, [inputValue, canGoUp])
 
   const handleItemClick = useCallback((item: FileItem) => {
     setInputValue(item.path + PATH_SEP)
@@ -230,10 +239,11 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
 
   const handleSelectFolder = useCallback(
     (folderPath: string) => {
+      if (!isWithinWorkspace(folderPath, workspaceRoot)) return
       onSelect(folderPath)
       onClose()
     },
-    [onSelect, onClose],
+    [onSelect, onClose, workspaceRoot],
   )
 
   const handleConfirmCurrent = useCallback(() => {
@@ -243,14 +253,14 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
       path = path.slice(0, -1)
     }
     // 只阻止空路径和 "."
-    if (!path || path === '.') return
+    if (!isWithinWorkspace(path, workspaceRoot)) return
     onSelect(path)
     onClose()
-  }, [inputValue, onSelect, onClose])
+  }, [inputValue, onSelect, onClose, workspaceRoot])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      const hasGoUp = inputValue.split(PATH_SEP).filter(Boolean).length > 0
+      const hasGoUp = canGoUp
       const minIndex = hasGoUp ? -1 : 0
       const maxIndex = filteredItems.length - 1
       switch (e.key) {
@@ -267,6 +277,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
           if (filteredItems.length > 0) {
             e.preventDefault()
             const selected = filteredItems[selectedIndex]
+            if (!selected) break
             setInputValue(selected.path + PATH_SEP)
             setSelectedIndex(0)
           }
@@ -282,9 +293,11 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
         }
         case 'Enter':
           e.preventDefault()
+          if (!inBounds) return
           if (filteredItems.length > 0) {
-            const selectedPath = filteredItems[selectedIndex].path
-            if (selectedPath) {
+            if (selectedIndex === -1) { handleGoBack(); break }
+            const selectedPath = filteredItems[selectedIndex]?.path
+            if (selectedPath && isWithinWorkspace(selectedPath, workspaceRoot)) {
               onSelect(selectedPath)
               onClose()
             }
@@ -294,7 +307,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
             if (path.endsWith(PATH_SEP) && path !== PATH_SEP && !/^[a-zA-Z]:\/$/.test(path)) {
               path = path.slice(0, -1)
             }
-            if (path && path !== '.') {
+            if (isWithinWorkspace(path, workspaceRoot)) {
               onSelect(path)
               onClose()
             }
@@ -306,7 +319,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
           break
       }
     },
-    [filteredItems, selectedIndex, inputValue, handleGoBack, onSelect, onClose],
+    [filteredItems, selectedIndex, inputValue, handleGoBack, onSelect, onClose, canGoUp, workspaceRoot, inBounds],
   )
 
   // ==========================================
@@ -347,14 +360,14 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
 
       {/* List */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-2 py-1 custom-scrollbar">
-        {error ? (
+        {error || (workspaceRoot && !inBounds) ? (
           <div className="flex items-center justify-center h-full text-danger-100 text-[length:var(--fs-sm)] px-4 text-center">
-            {error}
+            {error || t('projectDialog.outsideWorkspace')}
           </div>
         ) : (
           <div className="space-y-0.5">
             {/* Go Up */}
-            {inputValue.split(PATH_SEP).filter(Boolean).length > 0 && (
+            {canGoUp && (
               <ListItem
                 id="project-item-up"
                 icon={<ArrowUpIcon className="w-3.5 h-3.5" />}
@@ -413,6 +426,8 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', ser
           {inputValue}
         </div>
         <button
+          type="button"
+          disabled={!inBounds}
           onClick={handleConfirmCurrent}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-bg-000/40 hover:bg-accent-main-100/10 border border-border-200/60 hover:border-accent-main-100/30 text-text-200 hover:text-accent-main-100 rounded-md transition-colors text-[length:var(--fs-sm)] font-medium shrink-0 whitespace-nowrap"
         >

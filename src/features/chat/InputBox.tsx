@@ -28,6 +28,8 @@ import {
 } from './input/inputUtils'
 import { keybindingStore, matchesKeybinding } from '../../store/keybindingStore'
 import { themeStore } from '../../store/themeStore'
+import { registerChatContextReceiver } from '../../utils/chatContext'
+import { insertContextReference, rebaseAttachmentRanges, syncAttachmentRanges } from './input/contextInsertion'
 import { useChatViewport } from './chatViewport'
 import type { ApiAgent } from '../../api/client'
 import type { ModelInfo, FileCapabilities } from '../../api'
@@ -342,10 +344,7 @@ function InputBoxComponent({
       TEXTAREA_MIN_HEIGHT + TEXTAREA_VERTICAL_CHROME + toolbarHeight,
       nextComposerMaxHeight - footerHeight,
     )
-    const nextTextareaMaxHeight = Math.max(
-      TEXTAREA_MIN_HEIGHT,
-      nextInputContainerMaxHeight - inputContainerChrome,
-    )
+    const nextTextareaMaxHeight = Math.max(TEXTAREA_MIN_HEIGHT, nextInputContainerMaxHeight - inputContainerChrome)
 
     setComposerMaxHeight(prev => (Math.abs(prev - nextComposerMaxHeight) < 1 ? prev : nextComposerMaxHeight))
     setInputContainerMaxHeight(prev =>
@@ -706,14 +705,7 @@ function InputBoxComponent({
       // 同步检测 mention 是否被破坏/删除
       // 比对 attachments 的 textRange：如果文本中对应位置不再匹配，删除该 attachment
       setAttachments(prev => {
-        const surviving = prev.filter(a => {
-          if (!a.textRange) return true // 图片等无 textRange 的保留
-          const { start, end, value } = a.textRange
-          const actual = newText.slice(start, end)
-          return actual === value
-        })
-        // 只在数量变化时更新（避免不必要的 re-render）
-        return surviving.length === prev.length ? prev : surviving
+        return syncAttachmentRanges(prev, text, newText)
       })
 
       // 检测 @ 触发
@@ -739,7 +731,7 @@ function InputBoxComponent({
         }
       }
     },
-    [handleHistoryChange],
+    [handleHistoryChange, text],
   )
 
   const handleCompositionStart = useCallback(() => {
@@ -799,7 +791,15 @@ function InputBoxComponent({
       }
 
       setText(newText)
-      setAttachments(prev => [...prev, attachment])
+      setAttachments(prev => [
+        ...rebaseAttachmentRanges(
+          prev,
+          mentionStartIndex,
+          mentionStartIndex + 1 + mentionQuery.length,
+          mentionText.length + 1,
+        ),
+        attachment,
+      ])
       setMentionOpen(false)
 
       // 移动光标到 mention 后
@@ -854,7 +854,15 @@ function InputBoxComponent({
       }
 
       setText(newText)
-      setAttachments(prev => [...prev, attachment])
+      setAttachments(prev => [
+        ...rebaseAttachmentRanges(
+          prev,
+          slashStartIndex,
+          slashStartIndex + 1 + slashQuery.length,
+          commandText.length + 1,
+        ),
+        attachment,
+      ])
       setSlashOpen(false)
 
       // 移动光标到命令后
@@ -923,10 +931,20 @@ function InputBoxComponent({
 
       // 如果有 textRange，从文本中删除 @mention
       if (attachment.textRange) {
-        const { value } = attachment.textRange
-        // 删除 @mention 和后面的空格
-        const newText = text.replace(value + ' ', '').replace(value, '')
-        setText(newText)
+        const { start, end, value } = attachment.textRange
+        if (text.slice(start, end) === value) {
+          const removeTo = text[end] === ' ' ? end + 1 : end
+          setText(text.slice(0, start) + text.slice(removeTo))
+          setAttachments(prev =>
+            rebaseAttachmentRanges(
+              prev.filter(a => a.id !== id),
+              start,
+              removeTo,
+              0,
+            ),
+          )
+          return
+        }
       }
 
       setAttachments(prev => prev.filter(a => a.id !== id))
@@ -1032,7 +1050,10 @@ function InputBoxComponent({
       })
 
       setText(newText)
-      setAttachments(prev => [...prev, ...nextAttachments])
+      setAttachments(prev => [
+        ...rebaseAttachmentRanges(prev, cursorPos, cursorPos, insertedText.length),
+        ...nextAttachments,
+      ])
 
       requestAnimationFrame(() => {
         if (!textareaRef.current) return
@@ -1044,7 +1065,47 @@ function InputBoxComponent({
     [text],
   )
 
-  const insertDraggedFile = useCallback((fileInfo: DraggedFileInfo) => insertDraggedFiles([fileInfo]), [insertDraggedFiles])
+  const insertDraggedFile = useCallback(
+    (fileInfo: DraggedFileInfo) => insertDraggedFiles([fileInfo]),
+    [insertDraggedFiles],
+  )
+
+  useEffect(
+    () =>
+      registerChatContextReceiver(paneId, (attachment, target) => {
+        if (disabled || submittingRef.current || (sessionId ?? null) !== target.sessionId) return false
+        const input = textareaRef.current
+        let cursor: number | undefined
+        if (attachment.contextReference?.kind === 'selection') {
+          const currentText = input?.value ?? latestDraftRef.current.text
+          const result = insertContextReference(
+            currentText,
+            latestDraftRef.current.attachments,
+            attachment,
+            input?.selectionStart ?? currentText.length,
+            input?.selectionEnd ?? currentText.length,
+          )
+          latestDraftRef.current = { text: result.text, attachments: result.attachments }
+          setText(result.text)
+          setAttachments(result.attachments)
+          cursor = result.cursor
+        } else setAttachments(previous => [...previous, attachment])
+        handleExpandInput()
+        requestAnimationFrame(() => {
+          if (draftScopeRef.current !== sessionId) return
+          const current = textareaRef.current
+          if (!current) return
+          current.focus()
+          if (cursor !== undefined) current.setSelectionRange(cursor, cursor)
+        })
+        return true
+      }),
+    [paneId, sessionId, disabled, handleExpandInput],
+  )
+
+  const railAttachments = attachments.filter(
+    attachment => !(attachment.contextReference?.kind === 'selection' && attachment.textRange),
+  )
 
   useEffect(() => {
     const updateInternalFileDragState = () => {
@@ -1144,7 +1205,15 @@ function InputBoxComponent({
         setReadingFiles(readingFilesRef.current)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, disabled, externalFileDropMode, insertDraggedFiles, isSubmitting, sessionId],
+    [
+      buildDraggedFileInfo,
+      createUploadAttachmentFromDroppedPath,
+      disabled,
+      externalFileDropMode,
+      insertDraggedFiles,
+      isSubmitting,
+      sessionId,
+    ],
   )
 
   const handleTauriDragDropEvent = useCallback(
@@ -1226,9 +1295,7 @@ function InputBoxComponent({
     ? 'max(2rem, var(--safe-area-inset-bottom, 0px))'
     : 'max(0px, calc(var(--safe-area-inset-bottom, 0px) - 2rem))'
   // 收起态视觉下移：把 2rem 撑出的多余缓冲吃掉，只留 0.75rem(12px) 呼吸空间
-  const collapsedVisualOffset = isCollapsed
-    ? 'translateY(calc(2rem - 0.75rem))'
-    : 'none'
+  const collapsedVisualOffset = isCollapsed ? 'translateY(calc(2rem - 0.75rem))' : 'none'
 
   return (
     <div className="w-full">
@@ -1338,7 +1405,9 @@ function InputBoxComponent({
               {/* Drop overlay */}
               {(isDragging || isInternalFileDragging) && (
                 <div className="absolute inset-0 z-50 rounded-2xl bg-accent-main-100/5 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
-                  <span className="text-[length:var(--fs-base)] text-accent-main-100 font-medium">{t('inputBox.dropFilesHere')}</span>
+                  <span className="text-[length:var(--fs-base)] text-accent-main-100 font-medium">
+                    {t('inputBox.dropFilesHere')}
+                  </span>
                 </div>
               )}
 
@@ -1348,7 +1417,7 @@ function InputBoxComponent({
                   <div
                     ref={attachmentSectionRef}
                     className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
-                      attachments.length > 0 ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+                      railAttachments.length > 0 ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
                     }`}
                   >
                     <div className="overflow-hidden">
@@ -1362,7 +1431,7 @@ function InputBoxComponent({
                             style={{ WebkitOverflowScrolling: 'touch' }}
                           >
                             <AttachmentPreview
-                              attachments={attachments}
+                              attachments={railAttachments}
                               onRemove={handleRemoveAttachment}
                               variant="rail"
                               className={isSubmitting ? 'pr-4 pointer-events-none opacity-70' : 'pr-4'}
@@ -1384,12 +1453,25 @@ function InputBoxComponent({
                   {/* Text Input - 简单的 textarea，直接显示文本 */}
                   {(submitError || sendError) && (
                     <div role="alert" className="px-4 pt-2 text-danger-100 text-[length:var(--fs-sm)]">
-                      {t('inputBox.sendFailed')} {sendError || (submitError !== t('inputBox.sendFailed') ? submitError : '')}
+                      {t('inputBox.sendFailed')}{' '}
+                      {sendError || (submitError !== t('inputBox.sendFailed') ? submitError : '')}
                     </div>
                   )}
-                  {isSubmitting && <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">{t('inputBox.sending')}</div>}
-                  {readingFiles > 0 && <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">{t('inputBox.readingFiles')}</div>}
-                  {fileError && <div role="alert" className="px-4 pt-2 text-danger-100 text-[length:var(--fs-sm)]">{t('inputBox.fileReadFailed')}</div>}
+                  {isSubmitting && (
+                    <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">
+                      {t('inputBox.sending')}
+                    </div>
+                  )}
+                  {readingFiles > 0 && (
+                    <div role="status" className="px-4 pt-2 text-text-400 text-[length:var(--fs-sm)]">
+                      {t('inputBox.readingFiles')}
+                    </div>
+                  )}
+                  {fileError && (
+                    <div role="alert" className="px-4 pt-2 text-danger-100 text-[length:var(--fs-sm)]">
+                      {t('inputBox.fileReadFailed')}
+                    </div>
+                  )}
                   <div className="pt-4 pb-2">
                     <textarea
                       ref={textareaRef}

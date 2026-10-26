@@ -622,7 +622,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
       logger.log(useNativePtyBridge ? '[Terminal/Tauri] Connected:' : '[Terminal] WebSocket connected:', ptyId)
       if (!mountedRef.current) return
       reconnectAttempt = 0
-      layoutStore.updateTerminalTab(ptyId, { status: 'connected' })
+      layoutStore.updateTerminalTab(ptyId, { status: 'connected' }, serverId)
       const { cols, rows } = terminal
       logger.log('[Terminal] Sending size:', cols, 'x', rows)
       updatePtySession(ptyId, { size: { cols, rows } }, terminalDirectory, serverId).catch(() => {})
@@ -637,7 +637,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
       )
       resetTransport()
       if (!mountedRef.current) return
-      layoutStore.updateTerminalTab(ptyId, { status: 'disconnected' })
+      layoutStore.updateTerminalTab(ptyId, { status: 'disconnected' }, serverId)
 
       if (intentionalClose || code === 1000) {
         terminal.write('\r\n\x1b[90m[Connection closed]\x1b[0m\r\n')
@@ -766,7 +766,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
 
     disposeTitle = terminal.onTitleChange(title => {
       if (!mountedRef.current) return
-      layoutStore.updateTerminalShellTitle(ptyId, title, manualTerminalTitlesRef.current)
+      layoutStore.updateTerminalShellTitle(ptyId, title, manualTerminalTitlesRef.current, serverId)
     })
 
     return () => {
@@ -791,7 +791,7 @@ export const Terminal = memo(function Terminal({ ptyId, directory, serverId, isA
           cursor: cursorRef.current,
           rows: terminal.rows,
           cols: terminal.cols,
-        })
+        }, serverId)
       } catch {
         // ignore snapshot persistence failures
       }

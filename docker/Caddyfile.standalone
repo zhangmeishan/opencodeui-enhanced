@@ -2,6 +2,10 @@
 # 静态文件 + API 反代到外部 opencode serve
 
 :3000 {
+    # Optional ONLYOFFICE bridge. Unconfigured Office files remain preview/download-only.
+    handle_path /office-api/* {
+        reverse_proxy {$OFFICE_BRIDGE_URL:host.docker.internal:18093}
+    }
 	# API 反代（strip /api 前缀，SSE 需要 flush_interval -1）
 	handle_path /api/* {
 		reverse_proxy {$BACKEND_URL:host.docker.internal:4096} {

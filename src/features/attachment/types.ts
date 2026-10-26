@@ -1,5 +1,15 @@
 export type AttachmentType = 'file' | 'folder' | 'agent' | 'text' | 'command'
 
+export interface ContextReference {
+  kind: 'selection' | 'file'
+  text: string
+  location?: string
+  /** The source range is approximate, or unavailable for generated preview text. */
+  fuzzy?: boolean
+  /** One-based UTF-16 positions; the end is exclusive, like an editor selection. */
+  range?: { startLine: number; startColumn: number; endLine: number; endColumn: number }
+}
+
 export interface AttachmentOriginalSource {
   type?: 'file' | 'symbol' | 'resource'
   value?: string
@@ -37,6 +47,7 @@ export interface Attachment {
 
   // 文件内容（从 synthetic text part 获取）
   content?: string // 文件内容预览
+  contextReference?: ContextReference
 
   // agent 用
   agentName?: string // agent 名称

@@ -1,0 +1,21 @@
+{
+  "documentServerPublicUrl": "https://lcj.lychee-nlp2ai.com/onlyoffice",
+  "documentServerInternalUrl": "http://onlyoffice",
+  "bridgeDocumentUrl": "http://office-bridge:8093",
+  "frontendOrigins": ["http://100.64.0.5:2635", "https://lcj.lychee-nlp2ai.com"],
+  "maxBytes": 52428800,
+  "mappings": [
+    {
+      "id": "liucj-4097",
+      "apiUrls": ["/api"],
+      "auth": "none",
+      "roots": [{ "remote": "/home/liucj/workspace", "local": "/projects/liucj" }]
+    },
+    {
+      "id": "masonzms-4096",
+      "apiUrls": ["/api-mason"],
+      "auth": "none",
+      "roots": [{ "remote": "/home/masonzms/opencode_workspace", "local": "/projects/mason" }]
+    }
+  ]
+}

@@ -33,15 +33,16 @@ export function resolveHtmlResourcePath(htmlPath: string, reference: string, dir
     decoded = stripResourceSuffix(trimmed)
   }
   if (!decoded) return null
+  if (/[\0\r\n]/.test(decoded) || ABSOLUTE_RESOURCE_PATTERN.test(decoded) || decoded.startsWith('\\\\')) return null
 
   const normalizedHtmlPath = normalizeHtmlPath(htmlPath, directory)
   if (!normalizedHtmlPath) return null
   const normalizedReference = decoded.replace(/\\/g, '/')
   const baseParts = normalizedReference.startsWith('/') ? [] : normalizedHtmlPath.split('/').slice(0, -1)
   const referenceParts = normalizedReference.replace(/^\/+/, '').split('/')
-  const parts = [...baseParts]
+  const parts: string[] = []
 
-  for (const part of referenceParts) {
+  for (const part of [...baseParts, ...referenceParts]) {
     if (!part || part === '.') continue
     if (part === '..') {
       if (!parts.length) return null
@@ -185,13 +186,20 @@ export async function resolveHtmlPreviewResources(
   html: string,
   htmlPath: string,
   directory?: string,
+  serverId?: string,
 ): Promise<string> {
   const parsed = new DOMParser().parseFromString(html, 'text/html')
   const requests = new Map<string, Promise<FileContent | null>>()
+  let totalBytes = 0
   const loadRaw = (path: string) => {
     const cached = requests.get(path)
     if (cached) return cached
-    const request = getFileContent(path, directory).catch(() => null)
+    if (requests.size >= 64) return Promise.resolve(null)
+    const request = (serverId === undefined ? getFileContent(path, directory) : getFileContent(path, directory, serverId))
+      .then(content => {
+        totalBytes += content.content.length
+        return content.content.length <= 4 * 1024 * 1024 && totalBytes <= 16 * 1024 * 1024 ? content : null
+      }).catch(() => null)
     requests.set(path, request)
     return request
   }

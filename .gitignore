@@ -18,6 +18,9 @@ yarn.lock
 .env
 .env.local
 .env.*.local
+.env.office
+office-bridge/config.json
+office-data/
 
 # Docker
 workspace/

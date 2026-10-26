@@ -1,0 +1,57 @@
+# Save as /opt/onlyoffice/compose.yml. Uses existing onlyoffice project/volume names.
+name: onlyoffice
+services:
+  onlyoffice:
+    image: ${ONLYOFFICE_IMAGE}
+    restart: unless-stopped
+    ports:
+      # The PUBLIC Nginx host must reach this private address, not its own loopback.
+      - '100.64.0.5:8092:80'
+    environment:
+      JWT_ENABLED: 'true'
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?请在.env中保留现有JWT密钥}
+      JWT_HEADER: Authorization
+      ALLOW_PRIVATE_IP_ADDRESS: 'true'
+      ALLOW_META_IP_ADDRESS: 'false'
+    volumes:
+      - document-data:/var/www/onlyoffice/Data
+      - document-lib:/var/lib/onlyoffice
+      - document-db:/var/lib/postgresql
+      - document-logs:/var/log/onlyoffice
+    shm_size: 256m
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost/healthcheck']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+  office-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.office-bridge
+    restart: unless-stopped
+    ports:
+      # Local Vite uses this host-only port. Production Caddy uses the Docker network.
+      - '127.0.0.1:18093:8093'
+    environment:
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?请在.env中保留现有JWT密钥}
+      # Office user/password login is disabled by auth:none in config.json.
+    volumes:
+      - ./bridge/config.json:/config/config.json:ro
+      - type: bind
+        source: ${MASON_PROJECTS_PATH:?请在.env中设置MASON_PROJECTS_PATH}
+        target: /projects/mason
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${LIUCJ_PROJECTS_PATH:?请在.env中设置LIUCJ_PROJECTS_PATH}
+        target: /projects/liucj
+        bind:
+          create_host_path: false
+      - bridge-data:/data
+volumes:
+  document-data:
+  document-lib:
+  document-db:
+  document-logs:
+  bridge-data:

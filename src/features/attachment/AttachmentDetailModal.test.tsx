@@ -93,15 +93,57 @@ describe('AttachmentDetailModal', () => {
     vi.mocked(saveData).mockClear()
     render(
       <FullscreenProvider>
-        <SessionNavigationContext.Provider value={{ navigateToSession: vi.fn(), currentSessionId: 'server-b::session-1', currentDirectory: '/workspace/b' }}>
-          <AttachmentDetailModal attachment={{ id: 'pdf', type: 'file', displayName: 'report.pdf', mime: 'application/pdf', url: 'file:///workspace/b/report.pdf' }} isOpen onClose={vi.fn()} />
+        <SessionNavigationContext.Provider
+          value={{
+            navigateToSession: vi.fn(),
+            currentSessionId: 'server-b::session-1',
+            currentDirectory: '/workspace/b',
+          }}
+        >
+          <AttachmentDetailModal
+            attachment={{
+              id: 'pdf',
+              type: 'file',
+              displayName: 'report.pdf',
+              mime: 'application/pdf',
+              url: 'file:///workspace/b/report.pdf',
+            }}
+            isOpen
+            onClose={vi.fn()}
+          />
         </SessionNavigationContext.Provider>
       </FullscreenProvider>,
     )
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save to file' }))
     })
-    expect(readFileBytes).toHaveBeenCalledWith('/workspace/b/report.pdf', '/workspace/b', 'server-b')
+    expect(readFileBytes).toHaveBeenCalledWith(
+      '/workspace/b/report.pdf',
+      '/workspace/b',
+      'server-b',
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    )
     expect(saveData).toHaveBeenCalledWith(new Uint8Array([0, 255]), 'report.pdf', 'application/pdf')
+  })
+
+  it('does not schedule a new close timer while the fullscreen host is unmounting', () => {
+    const { unmount } = render(
+      <FullscreenProvider>
+        <AttachmentDetailModal
+          attachment={{ id: 'unmount', type: 'file', displayName: 'notes.txt', mime: 'text/plain', content: 'test' }}
+          isOpen
+          onClose={vi.fn()}
+        />
+      </FullscreenProvider>,
+    )
+    act(() => {
+      vi.runAllTimers()
+    })
+    const timers = vi.spyOn(window, 'setTimeout')
+    unmount()
+    expect(timers.mock.calls.some(([, delay]) => delay === 220)).toBe(false)
+    act(() => {
+      vi.runOnlyPendingTimers()
+    })
   })
 })
